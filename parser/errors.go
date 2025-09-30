@@ -1,4 +1,4 @@
-package text
+package cql2text
 
 import (
 	"errors"
