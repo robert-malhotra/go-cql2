@@ -1,4 +1,4 @@
-package text
+package cql2text
 
 // Expression is the root node of the CQL2 grammar
 type Expression struct {

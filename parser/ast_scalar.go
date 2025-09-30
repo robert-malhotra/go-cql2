@@ -1,4 +1,4 @@
-package text
+package cql2text
 
 // ScalarExpression represents any value expression
 type ScalarExpression struct {
