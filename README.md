@@ -1,9 +1,9 @@
-# go-cql-text
+# go-cql2
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/robert-malhotra/go-cql-text)](https://goreportcard.com/report/github.com/robert-malhotra/go-cql-text)
-[![GoDoc](https://godoc.org/github.com/robert-malhotra/go-cql-text/text?status.svg)](https://godoc.org/github.com/robert-malhotra/go-cql-text/text)
+[![Go Report Card](https://goreportcard.com/badge/github.com/robert-malhotra/go-cql2)](https://goreportcard.com/report/github.com/robert-malhotra/go-cql2)
+[![GoDoc](https://godoc.org/github.com/robert-malhotra/go-cql2/text?status.svg)](https://godoc.org/github.com/robert-malhotra/go-cql2/text)
 
-`go-cql-text` is a Go library that parses [CQL2 (Common Query Language) text expressions](https://www.ogc.org/standards/cql2/) into the same Abstract Syntax Tree (AST) used by [`go-ogc`](https://github.com/planetlabs/go-ogc).  
+`go-cql2` is a Go library that parses [CQL2 (Common Query Language) text expressions](https://www.ogc.org/standards/cql2/) into the same Abstract Syntax Tree (AST) used by [`go-ogc`](https://github.com/planetlabs/go-ogc).  
 This allows seamless handling of both CQL2 JSON and CQL2 text in Go.
 
 ## Features
@@ -23,7 +23,7 @@ This allows seamless handling of both CQL2 JSON and CQL2 text in Go.
 
 ## Builder Helpers
 
-The `builder` subpackage (`github.com/robert-malhotra/go-cql-text/builder`) offers
+The `builder` subpackage (`github.com/robert-malhotra/go-cql2/builder`) offers
 generics-based constructors that make it easy to assemble the
 [`go-ogc/filter`](https://github.com/planetlabs/go-ogc/tree/main/filter) AST without
 manually instantiating nodes or performing type assertions.
@@ -42,7 +42,7 @@ import (
 	"time"
 
 	"github.com/planetlabs/go-ogc/filter"
-	cql "github.com/robert-malhotra/go-cql-text/builder"
+	cql "github.com/robert-malhotra/go-cql2/builder"
 )
 
 func buildFilter() *filter.Filter {

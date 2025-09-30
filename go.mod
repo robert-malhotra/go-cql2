@@ -1,4 +1,4 @@
-module github.com/robert-malhotra/go-cql-text
+module github.com/robert-malhotra/go-cql2
 
 go 1.23.4
 

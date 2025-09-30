@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	cql "github.com/robert-malhotra/go-cql-text/builder"
+	cql "github.com/robert-malhotra/go-cql2/builder"
 )
 
 // ---------- helpers ----------
