@@ -1,0 +1,21 @@
+stages:
+  - test
+
+default:
+  image: golang:1.23
+  cache:
+    key: go-mod-cache
+    paths:
+      - ~/.cache/go-build
+      - ~/go/pkg/mod
+  variables:
+    GOTOOLCHAIN: auto
+    GOFLAGS: -mod=readonly
+
+fmt-and-test:
+  stage: test
+  script:
+    - go test ./...
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
