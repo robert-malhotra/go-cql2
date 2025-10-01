@@ -1,4 +1,4 @@
-package text
+package cql2text
 
 import "github.com/alecthomas/participle/v2/lexer"
 

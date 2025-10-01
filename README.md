@@ -1,7 +1,7 @@
 # go-cql2
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/robert-malhotra/go-cql2)](https://goreportcard.com/report/github.com/robert-malhotra/go-cql2)
-[![GoDoc](https://godoc.org/github.com/robert-malhotra/go-cql2/text?status.svg)](https://godoc.org/github.com/robert-malhotra/go-cql2/text)
+[![GoDoc](https://godoc.org/github.com/robert-malhotra/go-cql2/cql2text?status.svg)](https://godoc.org/github.com/robert-malhotra/go-cql2/cql2text)
 
 `go-cql2` is a Go library that parses [CQL2 (Common Query Language) text expressions](https://www.ogc.org/standards/cql2/) into the same Abstract Syntax Tree (AST) used by [`go-ogc`](https://github.com/planetlabs/go-ogc).  
 This allows seamless handling of both CQL2 JSON and CQL2 text in Go.

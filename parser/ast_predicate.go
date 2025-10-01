@@ -1,4 +1,4 @@
-package text
+package cql2text
 
 // Predicate represents any comparison or operation that returns boolean
 type Predicate struct {
