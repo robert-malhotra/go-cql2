@@ -237,11 +237,43 @@ func assertSyntaxJSON(t *testing.T, err error, wantPath string) *cql2.SyntaxErro
 	return se
 }
 
-func TestErrorUnknownOp(t *testing.T) {
-	_, err := cqljson.Parse([]byte(`{"op":"frobnicate","args":[]}`))
-	se := assertSyntaxJSON(t, err, "/op")
-	if se.Got != "frobnicate" {
-		t.Fatalf("got=%q", se.Got)
+// Unknown ops fall back to FunctionCall (case-preserved).
+// This used to error; see fix #3.
+func TestParseUnknownOpFallback(t *testing.T) {
+	n, err := cqljson.Parse([]byte(`{"op":"foo","args":[1,2]}`))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	fc, ok := n.(*cql2.FunctionCall)
+	if !ok {
+		t.Fatalf("got %T, want *FunctionCall", n)
+	}
+	if fc.Name != "foo" {
+		t.Fatalf("name=%q want %q", fc.Name, "foo")
+	}
+	if len(fc.Args) != 2 {
+		t.Fatalf("args len=%d want 2", len(fc.Args))
+	}
+	if nl, ok := fc.Args[0].(*cql2.NumLit); !ok || string(nl.Value) != "1" {
+		t.Fatalf("args[0]=%#v", fc.Args[0])
+	}
+	if nl, ok := fc.Args[1].(*cql2.NumLit); !ok || string(nl.Value) != "2" {
+		t.Fatalf("args[1]=%#v", fc.Args[1])
+	}
+}
+
+func TestParseUnknownOpFallbackPreservesCase(t *testing.T) {
+	// Function names are case-preserved; only operator names are case-insensitive.
+	n, err := cqljson.Parse([]byte(`{"op":"Foo","args":[1,2]}`))
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	fc, ok := n.(*cql2.FunctionCall)
+	if !ok {
+		t.Fatalf("got %T", n)
+	}
+	if fc.Name != "Foo" {
+		t.Fatalf("name=%q want %q (case-preserved)", fc.Name, "Foo")
 	}
 }
 
@@ -277,9 +309,11 @@ func TestErrorNestedPath(t *testing.T) {
 }
 
 func TestErrorOpArgChildHasFullPath(t *testing.T) {
-	in := `{"op":"and","args":[{"op":"or","args":[{"op":"frobnicate","args":[]}]}]}`
+	// A malformed args (not an array) deep inside the tree should report a
+	// JSONPath that includes every enclosing args[<i>] segment.
+	in := `{"op":"and","args":[{"op":"or","args":[{"op":"=","args":"oops"}]}]}`
 	_, err := cqljson.Parse([]byte(in))
-	assertSyntaxJSON(t, err, "/args/0/args/0/op")
+	assertSyntaxJSON(t, err, "/args/0/args/0/args")
 }
 
 // Top-level node types round-trip via Parse→Encode→Parse with cql2.Equal.
@@ -364,6 +398,177 @@ func TestRoundTripAppendixA(t *testing.T) {
 		`{"op":"t_after","args":[{"property":"datetime"},{"timestamp":"2022-11-11T00:00:00Z"}]}` +
 		`]}`
 	roundTripBytes(t, in)
+}
+
+// Fix #2: JSON op names are case-insensitive against the lowercase Operator
+// enum. The spec uses camelCase in JSON examples (t_finishedBy, t_metBy,
+// t_overlappedBy, t_startedBy); accept those and store the canonical form.
+func TestParseOpCamelCaseTemporal(t *testing.T) {
+	cases := []struct {
+		in   string
+		want cql2.Operator
+	}{
+		{`{"op":"t_finishedBy","args":[{"property":"a"},{"property":"b"}]}`, cql2.OpTFinishedBy},
+		{`{"op":"t_metBy","args":[{"property":"a"},{"property":"b"}]}`, cql2.OpTMetBy},
+		{`{"op":"t_overlappedBy","args":[{"property":"a"},{"property":"b"}]}`, cql2.OpTOverlappedBy},
+		{`{"op":"t_startedBy","args":[{"property":"a"},{"property":"b"}]}`, cql2.OpTStartedBy},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.want), func(t *testing.T) {
+			n, err := cqljson.Parse([]byte(tc.in))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			o, ok := n.(*cql2.Op)
+			if !ok {
+				t.Fatalf("got %T, want *Op", n)
+			}
+			if o.Op != tc.want {
+				t.Fatalf("op=%q want %q (canonical lowercase)", o.Op, tc.want)
+			}
+			if len(o.Args) != 2 {
+				t.Fatalf("args len=%d", len(o.Args))
+			}
+		})
+	}
+}
+
+func TestParseOpUpperCaseIdempotent(t *testing.T) {
+	// Pathologically all-caps spelling should normalize the same way.
+	n, err := cqljson.Parse([]byte(`{"op":"T_FINISHEDBY","args":[{"property":"a"},{"property":"b"}]}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	o, ok := n.(*cql2.Op)
+	if !ok {
+		t.Fatalf("got %T", n)
+	}
+	if o.Op != cql2.OpTFinishedBy {
+		t.Fatalf("op=%q want %q", o.Op, cql2.OpTFinishedBy)
+	}
+}
+
+func TestParseOpCanonicalCasePreserved(t *testing.T) {
+	// OpIsNull's canonical value is "isNull" (camelCase). Regardless of how
+	// the input is cased, the AST must store the canonical form so encoders
+	// emit it correctly. This guards the lookup-by-lowercase mechanism.
+	cases := []string{
+		`{"op":"isNull","args":[{"property":"a"}]}`,
+		`{"op":"isnull","args":[{"property":"a"}]}`,
+		`{"op":"ISNULL","args":[{"property":"a"}]}`,
+		`{"op":"IsNull","args":[{"property":"a"}]}`,
+	}
+	for _, in := range cases {
+		t.Run(in, func(t *testing.T) {
+			n, err := cqljson.Parse([]byte(in))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			o, ok := n.(*cql2.Op)
+			if !ok {
+				t.Fatalf("got %T, want *Op (regression: routed to FunctionCall)", n)
+			}
+			if o.Op != cql2.OpIsNull {
+				t.Fatalf("op=%q want %q (canonical preserved)", o.Op, cql2.OpIsNull)
+			}
+		})
+	}
+}
+
+func TestParseUnknownOpMissingArgs(t *testing.T) {
+	// Even unknown ops must have an "args" key — missing args is a syntax error,
+	// not a silent fallback to a zero-arg FunctionCall.
+	_, err := cqljson.Parse([]byte(`{"op":"foo"}`))
+	assertSyntaxJSON(t, err, "")
+}
+
+func TestParseUnknownOpArgsNotArray(t *testing.T) {
+	_, err := cqljson.Parse([]byte(`{"op":"foo","args":"not-an-array"}`))
+	assertSyntaxJSON(t, err, "/args")
+}
+
+// Fix #4 (json side): interval endpoints may be {"property":"<name>"} objects.
+func TestParseIntervalPropertyEndpoints(t *testing.T) {
+	in := `{"interval":[{"property":"starts_at"},{"property":"ends_at"}]}`
+	n, err := cqljson.Parse([]byte(in))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	iv, ok := n.(*cql2.IntervalLit)
+	if !ok {
+		t.Fatalf("got %T", n)
+	}
+	ps, ok := iv.Start.(*cql2.PropertyRef)
+	if !ok || ps.Name != "starts_at" {
+		t.Fatalf("start=%#v", iv.Start)
+	}
+	pe, ok := iv.End.(*cql2.PropertyRef)
+	if !ok || pe.Name != "ends_at" {
+		t.Fatalf("end=%#v", iv.End)
+	}
+	out, err := cqljson.Encode(n)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if string(out) != in {
+		t.Fatalf("round-trip:\n  in:  %s\n  out: %s", in, out)
+	}
+}
+
+func TestParseIntervalMixedLiteralStartPropertyEnd(t *testing.T) {
+	in := `{"interval":["2020-01-01",{"property":"ends_at"}]}`
+	n, err := cqljson.Parse([]byte(in))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	iv := n.(*cql2.IntervalLit)
+	if _, ok := iv.Start.(*cql2.DateLit); !ok {
+		t.Fatalf("start=%T", iv.Start)
+	}
+	if pe, ok := iv.End.(*cql2.PropertyRef); !ok || pe.Name != "ends_at" {
+		t.Fatalf("end=%#v", iv.End)
+	}
+	out, err := cqljson.Encode(n)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if string(out) != in {
+		t.Fatalf("round-trip:\n  in:  %s\n  out: %s", in, out)
+	}
+}
+
+func TestParseIntervalMixedPropertyStartUnboundedEnd(t *testing.T) {
+	in := `{"interval":[{"property":"starts_at"},".."]}`
+	n, err := cqljson.Parse([]byte(in))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	iv := n.(*cql2.IntervalLit)
+	if ps, ok := iv.Start.(*cql2.PropertyRef); !ok || ps.Name != "starts_at" {
+		t.Fatalf("start=%#v", iv.Start)
+	}
+	if _, ok := iv.End.(*cql2.Unbounded); !ok {
+		t.Fatalf("end=%T", iv.End)
+	}
+	out, err := cqljson.Encode(n)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if string(out) != in {
+		t.Fatalf("round-trip:\n  in:  %s\n  out: %s", in, out)
+	}
+}
+
+func TestParseIntervalPropertyMissingKey(t *testing.T) {
+	// Object without "property" key is a syntax error rooted at the endpoint.
+	_, err := cqljson.Parse([]byte(`{"interval":[{"foo":"bar"},".."]}`))
+	assertSyntaxJSON(t, err, "/interval/0")
+}
+
+func TestParseIntervalPropertyWrongType(t *testing.T) {
+	// Non-string property value points at /interval/<i>/property.
+	_, err := cqljson.Parse([]byte(`{"interval":[{"property":42},".."]}`))
+	assertSyntaxJSON(t, err, "/interval/0/property")
 }
 
 // roundTripBytes asserts Parse→Encode→Parse→Encode produces byte-identical

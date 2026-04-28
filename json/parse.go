@@ -5,6 +5,7 @@ import (
 	stdjson "encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	cql2 "github.com/example/go-cql2"
@@ -42,8 +43,12 @@ func (p *jparser) recordPos(n cql2.Node, path string) {
 	p.cfg.Positions.Set(n, cql2.Pos{JSONPath: path})
 }
 
-// known operator set, computed once.
-var knownOps = func() map[cql2.Operator]struct{} {
+// canonicalOps maps lowercased operator names to their canonical Operator
+// constant. The CQL2 spec treats operator names as case-insensitive, but the
+// canonical form (e.g. "isNull", "t_finishedby") is what the AST stores and
+// what encoders emit, so we look up by the lowercased form and yield the
+// canonical Operator value.
+var canonicalOps = func() map[string]cql2.Operator {
 	all := []cql2.Operator{
 		cql2.OpAnd, cql2.OpOr, cql2.OpNot,
 		cql2.OpEq, cql2.OpNeq, cql2.OpLt, cql2.OpLte, cql2.OpGt, cql2.OpGte,
@@ -58,9 +63,9 @@ var knownOps = func() map[cql2.Operator]struct{} {
 		cql2.OpAContains, cql2.OpAContainedBy, cql2.OpAEquals, cql2.OpAOverlaps,
 		cql2.OpCaseI, cql2.OpAccentI,
 	}
-	m := make(map[cql2.Operator]struct{}, len(all))
+	m := make(map[string]cql2.Operator, len(all))
 	for _, o := range all {
-		m[o] = struct{}{}
+		m[strings.ToLower(string(o))] = o
 	}
 	return m
 }()
@@ -250,10 +255,9 @@ func (p *jparser) parseOp(obj map[string]stdjson.RawMessage, path string) (cql2.
 		return nil, serr(joinPath(path, "op"),
 			fmt.Sprintf("\"op\" must be a string: %v", err))
 	}
-	op := cql2.Operator(opStr)
-	if _, ok := knownOps[op]; !ok {
-		return nil, serrGE(joinPath(path, "op"), "unknown operator", opStr, nil)
-	}
+	// Operators are case-insensitive per the CQL2 spec; look up by lowercased
+	// form to find the canonical Operator value (e.g. "isNull" not "isnull").
+	canonical, isKnown := canonicalOps[strings.ToLower(opStr)]
 
 	rawArgs, ok := obj["args"]
 	if !ok {
@@ -272,7 +276,13 @@ func (p *jparser) parseOp(obj map[string]stdjson.RawMessage, path string) (cql2.
 		}
 		args[i] = child
 	}
-	return &cql2.Op{Op: op, Args: args}, nil
+	if !isKnown {
+		// Unknown op → fallback to FunctionCall. Function names are
+		// case-preserved (only operators are case-insensitive), so we use the
+		// original opStr rather than the canonical operator value.
+		return &cql2.FunctionCall{Name: opStr, Args: args}, nil
+	}
+	return &cql2.Op{Op: canonical, Args: args}, nil
 }
 
 func (p *jparser) parseFunction(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error) {
@@ -349,33 +359,68 @@ func parseDate(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error
 }
 
 func parseInterval(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error) {
-	var endpoints []string
-	if err := stdjson.Unmarshal(obj["interval"], &endpoints); err != nil {
+	// Endpoints may be either JSON strings (literal date/timestamp/"..") or
+	// JSON objects of the form {"property":"<name>"}.
+	var rawEndpoints []stdjson.RawMessage
+	if err := stdjson.Unmarshal(obj["interval"], &rawEndpoints); err != nil {
 		return nil, serr(joinPath(path, "interval"),
-			fmt.Sprintf("\"interval\" must be an array of two strings: %v", err))
+			fmt.Sprintf("\"interval\" must be an array of two endpoints: %v", err))
 	}
-	if len(endpoints) != 2 {
+	if len(rawEndpoints) != 2 {
 		return nil, serr(joinPath(path, "interval"),
-			fmt.Sprintf("interval must have exactly 2 endpoints, got %d", len(endpoints)))
+			fmt.Sprintf("interval must have exactly 2 endpoints, got %d", len(rawEndpoints)))
 	}
-	parseEnd := func(s string, idx int) (cql2.IntervalEndpoint, error) {
-		if s == ".." {
-			return &cql2.Unbounded{}, nil
+	parseEnd := func(raw stdjson.RawMessage, idx int) (cql2.IntervalEndpoint, error) {
+		t := trimWS(raw)
+		if len(t) == 0 {
+			return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
+				"empty interval endpoint")
 		}
-		if tt, err := time.Parse(time.RFC3339Nano, s); err == nil {
-			return &cql2.TimestampLit{Value: tt}, nil
+		switch t[0] {
+		case '"':
+			var s string
+			if err := stdjson.Unmarshal(t, &s); err != nil {
+				return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
+					fmt.Sprintf("invalid interval endpoint string: %v", err))
+			}
+			if s == ".." {
+				return &cql2.Unbounded{}, nil
+			}
+			if tt, err := time.Parse(time.RFC3339Nano, s); err == nil {
+				return &cql2.TimestampLit{Value: tt}, nil
+			}
+			if tt, err := time.ParseInLocation("2006-01-02", s, time.UTC); err == nil {
+				return &cql2.DateLit{Value: tt}, nil
+			}
+			return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
+				fmt.Sprintf("invalid interval endpoint %q", s))
+		case '{':
+			var sub map[string]stdjson.RawMessage
+			if err := stdjson.Unmarshal(t, &sub); err != nil {
+				return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
+					fmt.Sprintf("invalid interval endpoint object: %v", err))
+			}
+			rawProp, ok := sub["property"]
+			if !ok {
+				return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
+					"interval endpoint object must have a \"property\" key")
+			}
+			var name string
+			if err := stdjson.Unmarshal(rawProp, &name); err != nil {
+				return nil, serr(joinPath(path, "interval", strconv.Itoa(idx), "property"),
+					fmt.Sprintf("\"property\" must be a string: %v", err))
+			}
+			return &cql2.PropertyRef{Name: name}, nil
+		default:
+			return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
+				fmt.Sprintf("invalid interval endpoint: expected string or {\"property\":...}, got %q", t[0]))
 		}
-		if tt, err := time.ParseInLocation("2006-01-02", s, time.UTC); err == nil {
-			return &cql2.DateLit{Value: tt}, nil
-		}
-		return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
-			fmt.Sprintf("invalid interval endpoint %q", s))
 	}
-	start, err := parseEnd(endpoints[0], 0)
+	start, err := parseEnd(rawEndpoints[0], 0)
 	if err != nil {
 		return nil, err
 	}
-	end, err := parseEnd(endpoints[1], 1)
+	end, err := parseEnd(rawEndpoints[1], 1)
 	if err != nil {
 		return nil, err
 	}

@@ -157,6 +157,10 @@ func writeEndpoint(buf *bytes.Buffer, e cql2.IntervalEndpoint) error {
 		return writeJSONString(buf, v.Value.Format("2006-01-02T15:04:05.999999999Z07:00"))
 	case *cql2.DateLit:
 		return writeJSONString(buf, v.Value.Format("2006-01-02"))
+	case *cql2.PropertyRef:
+		// Property endpoints are emitted as objects so they round-trip with
+		// the JSON parser's interval-endpoint reader.
+		return encodeNode(buf, v)
 	case nil:
 		return writeJSONString(buf, "..")
 	}
