@@ -12,10 +12,12 @@ import (
 
 // Parse parses CQL2 Text input into an AST.
 //
-// TODO(wave-3): consume opts (positions, conformance, custom ops, text style).
+// Recognized options: WithConformance, WithPositions, WithCustomOperators,
+// WithDateTimezone.
 func Parse(input string, opts ...cql2.Option) (cql2.Node, error) {
-	_ = opts
+	cfg := cql2.ResolveOptions(opts...)
 	p := newParser(input)
+	p.cfg = cfg
 	n, err := p.parseExpression()
 	if err != nil {
 		return nil, err
@@ -24,12 +26,13 @@ func Parse(input string, opts ...cql2.Option) (cql2.Node, error) {
 	if p.pos < len(p.src) {
 		return nil, p.syntaxErrorAt(p.curPos(), "unexpected trailing input", p.peekRune())
 	}
+	if err := checkConformance(n, cfg); err != nil {
+		return nil, err
+	}
 	return n, nil
 }
 
 // ParseBytes parses CQL2 Text from a byte slice.
-//
-// TODO(wave-3): consume opts (positions, conformance, custom ops, text style).
 func ParseBytes(input []byte, opts ...cql2.Option) (cql2.Node, error) {
 	return Parse(string(input), opts...)
 }
@@ -75,9 +78,19 @@ type parser struct {
 	line int
 	col  int
 
+	cfg *cql2.Config
+
 	// One-token lookahead.
 	hasPeek bool
 	peeked  token
+}
+
+// recordPos sets a position on the parser's PositionMap if active.
+func (p *parser) recordPos(n cql2.Node, pos cql2.Pos) {
+	if p == nil || p.cfg == nil || p.cfg.Positions == nil || n == nil {
+		return
+	}
+	p.cfg.Positions.Set(n, pos)
 }
 
 func newParser(src string) *parser {
@@ -822,13 +835,23 @@ func (p *parser) parsePrimary() (cql2.Node, error) {
 		}
 		return inner, nil
 	case tokNumber:
-		return &cql2.NumLit{Value: json.Number(t.text)}, nil
+		n := &cql2.NumLit{Value: json.Number(t.text)}
+		p.recordPos(n, t.pos)
+		return n, nil
 	case tokString:
-		return &cql2.StringLit{Value: t.text}, nil
+		n := &cql2.StringLit{Value: t.text}
+		p.recordPos(n, t.pos)
+		return n, nil
 	case tokQuotedIdent:
-		return &cql2.PropertyRef{Name: t.text}, nil
+		n := &cql2.PropertyRef{Name: t.text}
+		p.recordPos(n, t.pos)
+		return n, nil
 	case tokIdent:
-		return p.parseIdentPrimary(t)
+		n, err := p.parseIdentPrimary(t)
+		if err == nil {
+			p.recordPos(n, t.pos)
+		}
+		return n, err
 	}
 	return nil, p.syntaxErrorAt(t.pos, "unexpected token", t.text)
 }

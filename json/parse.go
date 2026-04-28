@@ -15,10 +15,31 @@ import (
 //
 // Errors are *cql2.SyntaxError with Encoding=EncodingJSON and a JSON-Pointer
 // path identifying the offending location.
+//
+// Recognized options: WithConformance, WithPositions, WithCustomOperators.
 func Parse(data []byte, opts ...cql2.Option) (cql2.Node, error) {
-	// TODO(wave-3): consume opts
-	_ = opts
-	return parseNode(stdjson.RawMessage(data), "")
+	cfg := cql2.ResolveOptions(opts...)
+	p := &jparser{cfg: cfg}
+	n, err := p.parseNode(stdjson.RawMessage(data), "")
+	if err != nil {
+		return nil, err
+	}
+	if err := checkConformance(n, cfg); err != nil {
+		return nil, err
+	}
+	return n, nil
+}
+
+// jparser threads cfg through parsing for position recording and conformance.
+type jparser struct {
+	cfg *cql2.Config
+}
+
+func (p *jparser) recordPos(n cql2.Node, path string) {
+	if p == nil || p.cfg == nil || p.cfg.Positions == nil || n == nil {
+		return
+	}
+	p.cfg.Positions.Set(n, cql2.Pos{JSONPath: path})
 }
 
 // known operator set, computed once.
@@ -105,41 +126,51 @@ func trimWS(raw []byte) []byte {
 }
 
 // parseNode dispatches by first non-whitespace byte and recurses.
-func parseNode(raw stdjson.RawMessage, path string) (cql2.Node, error) {
+func (p *jparser) parseNode(raw stdjson.RawMessage, path string) (cql2.Node, error) {
 	t := trimWS(raw)
 	if len(t) == 0 {
 		return nil, serr(path, "empty value")
 	}
+	var (
+		n   cql2.Node
+		err error
+	)
 	switch c := t[0]; {
 	case c == 't' || c == 'f':
 		var b bool
-		if err := stdjson.Unmarshal(t, &b); err != nil {
+		if err = stdjson.Unmarshal(t, &b); err != nil {
 			return nil, serr(path, fmt.Sprintf("invalid boolean: %v", err))
 		}
-		return &cql2.BoolLit{Value: b}, nil
+		n = &cql2.BoolLit{Value: b}
 	case c == 'n':
 		var v any
-		if err := stdjson.Unmarshal(t, &v); err != nil {
+		if err = stdjson.Unmarshal(t, &v); err != nil {
 			return nil, serr(path, fmt.Sprintf("invalid null: %v", err))
 		}
 		if v != nil {
 			return nil, serr(path, "expected null")
 		}
-		return &cql2.NullLit{}, nil
+		n = &cql2.NullLit{}
 	case c == '"':
 		var s string
-		if err := stdjson.Unmarshal(t, &s); err != nil {
+		if err = stdjson.Unmarshal(t, &s); err != nil {
 			return nil, serr(path, fmt.Sprintf("invalid string: %v", err))
 		}
-		return &cql2.StringLit{Value: s}, nil
+		n = &cql2.StringLit{Value: s}
 	case c == '[':
-		return parseArray(t, path)
+		n, err = p.parseArray(t, path)
 	case c == '{':
-		return parseObject(t, path)
+		n, err = p.parseObject(t, path)
 	case c == '-' || (c >= '0' && c <= '9'):
-		return parseNumber(t, path)
+		n, err = parseNumber(t, path)
+	default:
+		return nil, serr(path, fmt.Sprintf("unexpected character %q", t[0]))
 	}
-	return nil, serr(path, fmt.Sprintf("unexpected character %q", t[0]))
+	if err != nil {
+		return nil, err
+	}
+	p.recordPos(n, path)
+	return n, nil
 }
 
 func parseNumber(raw []byte, path string) (cql2.Node, error) {
@@ -155,14 +186,14 @@ func parseNumber(raw []byte, path string) (cql2.Node, error) {
 	return &cql2.NumLit{Value: stdjson.Number(s)}, nil
 }
 
-func parseArray(raw []byte, path string) (cql2.Node, error) {
+func (p *jparser) parseArray(raw []byte, path string) (cql2.Node, error) {
 	var elems []stdjson.RawMessage
 	if err := stdjson.Unmarshal(raw, &elems); err != nil {
 		return nil, serr(path, fmt.Sprintf("invalid array: %v", err))
 	}
 	out := make([]cql2.Node, len(elems))
 	for i, e := range elems {
-		child, err := parseNode(e, joinPath(path, strconv.Itoa(i)))
+		child, err := p.parseNode(e, joinPath(path, strconv.Itoa(i)))
 		if err != nil {
 			return nil, err
 		}
@@ -171,7 +202,7 @@ func parseArray(raw []byte, path string) (cql2.Node, error) {
 	return &cql2.ArrayLit{Elements: out}, nil
 }
 
-func parseObject(raw []byte, path string) (cql2.Node, error) {
+func (p *jparser) parseObject(raw []byte, path string) (cql2.Node, error) {
 	var obj map[string]stdjson.RawMessage
 	dec := stdjson.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(&obj); err != nil {
@@ -190,9 +221,9 @@ func parseObject(raw []byte, path string) (cql2.Node, error) {
 
 	switch {
 	case has(obj, "op"):
-		return parseOp(obj, path)
+		return p.parseOp(obj, path)
 	case has(obj, "function"):
-		return parseFunction(obj, path)
+		return p.parseFunction(obj, path)
 	case has(obj, "property"):
 		return parseProperty(obj, path)
 	case has(obj, "timestamp"):
@@ -209,7 +240,7 @@ func parseObject(raw []byte, path string) (cql2.Node, error) {
 		keysOf(obj), objectKeys)
 }
 
-func parseOp(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error) {
+func (p *jparser) parseOp(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error) {
 	rawOp, ok := obj["op"]
 	if !ok {
 		return nil, serr(path, "missing \"op\"")
@@ -235,7 +266,7 @@ func parseOp(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error) 
 	}
 	args := make([]cql2.Node, len(rawList))
 	for i, r := range rawList {
-		child, err := parseNode(r, joinPath(path, "args", strconv.Itoa(i)))
+		child, err := p.parseNode(r, joinPath(path, "args", strconv.Itoa(i)))
 		if err != nil {
 			return nil, err
 		}
@@ -244,7 +275,7 @@ func parseOp(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error) 
 	return &cql2.Op{Op: op, Args: args}, nil
 }
 
-func parseFunction(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error) {
+func (p *jparser) parseFunction(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error) {
 	rawFn := obj["function"]
 	var fn map[string]stdjson.RawMessage
 	if err := stdjson.Unmarshal(rawFn, &fn); err != nil {
@@ -271,7 +302,7 @@ func parseFunction(obj map[string]stdjson.RawMessage, path string) (cql2.Node, e
 	}
 	args := make([]cql2.Node, len(rawList))
 	for i, r := range rawList {
-		child, err := parseNode(r, joinPath(path, "function", "args", strconv.Itoa(i)))
+		child, err := p.parseNode(r, joinPath(path, "function", "args", strconv.Itoa(i)))
 		if err != nil {
 			return nil, err
 		}

@@ -12,17 +12,25 @@ import (
 
 // Encode emits an AST as a CQL2 Text string.
 //
-// TODO(wave-3): consume opts (positions, conformance, custom ops, text style).
+// Recognized options: WithTextStyle (StyleNormal, StyleVerbose),
+// WithCaseInsensitiveAsFunction.
 func Encode(n cql2.Node, opts ...cql2.Option) (string, error) {
-	_ = opts
+	cfg := cql2.ResolveOptions(opts...)
 	if n == nil {
 		return "", fmt.Errorf("text: cannot encode nil node")
 	}
 	var b strings.Builder
-	if err := writeNode(&b, n, precTop); err != nil {
+	enc := &encoder{cfg: cfg}
+	if err := enc.writeNode(&b, n, precTop); err != nil {
 		return "", err
 	}
 	return b.String(), nil
+}
+
+// encoder bundles per-call state for text encoding so that style settings
+// reach inner helpers without threading a parameter through.
+type encoder struct {
+	cfg *cql2.Config
 }
 
 // Precedence levels (higher binds tighter). Used to decide parenthesisation.
@@ -62,7 +70,7 @@ func opPrec(op cql2.Operator) int {
 	return precAtom
 }
 
-func writeNode(b *strings.Builder, n cql2.Node, parentPrec int) error {
+func (e *encoder) writeNode(b *strings.Builder, n cql2.Node, parentPrec int) error {
 	switch x := n.(type) {
 	case *cql2.BoolLit:
 		if x.Value {
@@ -120,7 +128,7 @@ func writeNode(b *strings.Builder, n cql2.Node, parentPrec int) error {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			if err := writeNode(b, el, precTop); err != nil {
+			if err := e.writeNode(b, el, precTop); err != nil {
 				return err
 			}
 		}
@@ -136,25 +144,33 @@ func writeNode(b *strings.Builder, n cql2.Node, parentPrec int) error {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			if err := writeNode(b, a, precTop); err != nil {
+			if err := e.writeNode(b, a, precTop); err != nil {
 				return err
 			}
 		}
 		b.WriteByte(')')
 		return nil
 	case *cql2.Op:
-		return writeOp(b, x, parentPrec)
+		return e.writeOp(b, x, parentPrec)
 	}
 	return fmt.Errorf("text: cannot encode node of type %T", n)
 }
 
-func writeOp(b *strings.Builder, x *cql2.Op, parentPrec int) error {
+func (e *encoder) writeOp(b *strings.Builder, x *cql2.Op, parentPrec int) error {
 	myPrec := opPrec(x.Op)
 	wrap := myPrec < parentPrec && myPrec >= precOr
+	// StyleVerbose: always wrap any binary/logical operator in parens, even
+	// when not strictly required for precedence. Function-style ops (spatial,
+	// temporal, array, casei, accenti) emit as atoms and aren't wrapped.
+	if e != nil && e.cfg != nil && e.cfg.TextStyle == cql2.StyleVerbose {
+		if myPrec >= precOr && myPrec <= precPower {
+			wrap = true
+		}
+	}
 	if wrap {
 		b.WriteByte('(')
 	}
-	if err := writeOpInner(b, x); err != nil {
+	if err := e.writeOpInner(b, x); err != nil {
 		return err
 	}
 	if wrap {
@@ -163,7 +179,7 @@ func writeOp(b *strings.Builder, x *cql2.Op, parentPrec int) error {
 	return nil
 }
 
-func writeOpInner(b *strings.Builder, x *cql2.Op) error {
+func (e *encoder) writeOpInner(b *strings.Builder, x *cql2.Op) error {
 	switch x.Op {
 	case cql2.OpAnd, cql2.OpOr:
 		sep := " AND "
@@ -175,7 +191,7 @@ func writeOpInner(b *strings.Builder, x *cql2.Op) error {
 			if i > 0 {
 				b.WriteString(sep)
 			}
-			if err := writeNode(b, a, myPrec+1); err != nil {
+			if err := e.writeNode(b, a, myPrec+1); err != nil {
 				return err
 			}
 		}
@@ -187,7 +203,7 @@ func writeOpInner(b *strings.Builder, x *cql2.Op) error {
 				switch inner.Op {
 				case cql2.OpIsNull:
 					if len(inner.Args) == 1 {
-						if err := writeNode(b, inner.Args[0], precCompare); err != nil {
+						if err := e.writeNode(b, inner.Args[0], precCompare); err != nil {
 							return err
 						}
 						b.WriteString(" IS NOT NULL")
@@ -195,22 +211,22 @@ func writeOpInner(b *strings.Builder, x *cql2.Op) error {
 					}
 				case cql2.OpBetween:
 					if len(inner.Args) == 3 {
-						return writeBetween(b, inner.Args[0], inner.Args[1], inner.Args[2], true)
+						return e.writeBetween(b, inner.Args[0], inner.Args[1], inner.Args[2], true)
 					}
 				case cql2.OpIn:
 					if len(inner.Args) == 2 {
-						return writeIn(b, inner.Args[0], inner.Args[1], true)
+						return e.writeIn(b, inner.Args[0], inner.Args[1], true)
 					}
 				case cql2.OpLike:
 					if len(inner.Args) == 2 {
-						return writeLike(b, inner.Args[0], inner.Args[1], true)
+						return e.writeLike(b, inner.Args[0], inner.Args[1], true)
 					}
 				}
 			}
 		}
 		b.WriteString("NOT ")
 		if len(x.Args) == 1 {
-			return writeNode(b, x.Args[0], precNot)
+			return e.writeNode(b, x.Args[0], precNot)
 		}
 		return fmt.Errorf("text: NOT requires exactly one argument")
 	case cql2.OpEq, cql2.OpNeq, cql2.OpLt, cql2.OpLte, cql2.OpGt, cql2.OpGte,
@@ -226,38 +242,38 @@ func writeOpInner(b *strings.Builder, x *cql2.Op) error {
 			leftPrec = myPrec + 1
 			rightPrec = myPrec
 		}
-		if err := writeNode(b, x.Args[0], leftPrec); err != nil {
+		if err := e.writeNode(b, x.Args[0], leftPrec); err != nil {
 			return err
 		}
 		b.WriteString(" ")
 		b.WriteString(string(x.Op))
 		b.WriteString(" ")
-		return writeNode(b, x.Args[1], rightPrec)
+		return e.writeNode(b, x.Args[1], rightPrec)
 	case cql2.OpIDiv:
 		if len(x.Args) != 2 {
 			return fmt.Errorf("text: div requires 2 arguments")
 		}
 		myPrec := opPrec(x.Op)
-		if err := writeNode(b, x.Args[0], myPrec); err != nil {
+		if err := e.writeNode(b, x.Args[0], myPrec); err != nil {
 			return err
 		}
 		b.WriteString(" div ")
-		return writeNode(b, x.Args[1], myPrec+1)
+		return e.writeNode(b, x.Args[1], myPrec+1)
 	case cql2.OpBetween:
 		if len(x.Args) != 3 {
 			return fmt.Errorf("text: BETWEEN requires 3 arguments")
 		}
-		return writeBetween(b, x.Args[0], x.Args[1], x.Args[2], false)
+		return e.writeBetween(b, x.Args[0], x.Args[1], x.Args[2], false)
 	case cql2.OpIn:
 		if len(x.Args) != 2 {
 			return fmt.Errorf("text: IN requires 2 arguments")
 		}
-		return writeIn(b, x.Args[0], x.Args[1], false)
+		return e.writeIn(b, x.Args[0], x.Args[1], false)
 	case cql2.OpIsNull:
 		if len(x.Args) != 1 {
 			return fmt.Errorf("text: IS NULL requires 1 argument")
 		}
-		if err := writeNode(b, x.Args[0], precCompare); err != nil {
+		if err := e.writeNode(b, x.Args[0], precCompare); err != nil {
 			return err
 		}
 		b.WriteString(" IS NULL")
@@ -266,7 +282,7 @@ func writeOpInner(b *strings.Builder, x *cql2.Op) error {
 		if len(x.Args) != 2 {
 			return fmt.Errorf("text: LIKE requires 2 arguments")
 		}
-		return writeLike(b, x.Args[0], x.Args[1], false)
+		return e.writeLike(b, x.Args[0], x.Args[1], false)
 	case cql2.OpCaseI, cql2.OpAccentI:
 		name := "CASEI"
 		if x.Op == cql2.OpAccentI {
@@ -278,7 +294,7 @@ func writeOpInner(b *strings.Builder, x *cql2.Op) error {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			if err := writeNode(b, a, precTop); err != nil {
+			if err := e.writeNode(b, a, precTop); err != nil {
 				return err
 			}
 		}
@@ -286,17 +302,17 @@ func writeOpInner(b *strings.Builder, x *cql2.Op) error {
 		return nil
 	}
 	// Default for spatial / temporal / array operators: function-call form.
-	return writeOpAsFunction(b, x)
+	return e.writeOpAsFunction(b, x)
 }
 
-func writeOpAsFunction(b *strings.Builder, x *cql2.Op) error {
+func (e *encoder) writeOpAsFunction(b *strings.Builder, x *cql2.Op) error {
 	b.WriteString(strings.ToUpper(string(x.Op)))
 	b.WriteByte('(')
 	for i, a := range x.Args {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		if err := writeNode(b, a, precTop); err != nil {
+		if err := e.writeNode(b, a, precTop); err != nil {
 			return err
 		}
 	}
@@ -304,8 +320,8 @@ func writeOpAsFunction(b *strings.Builder, x *cql2.Op) error {
 	return nil
 }
 
-func writeBetween(b *strings.Builder, lhs, lo, hi cql2.Node, negate bool) error {
-	if err := writeNode(b, lhs, precCompare); err != nil {
+func (e *encoder) writeBetween(b *strings.Builder, lhs, lo, hi cql2.Node, negate bool) error {
+	if err := e.writeNode(b, lhs, precCompare); err != nil {
 		return err
 	}
 	if negate {
@@ -313,15 +329,15 @@ func writeBetween(b *strings.Builder, lhs, lo, hi cql2.Node, negate bool) error 
 	} else {
 		b.WriteString(" BETWEEN ")
 	}
-	if err := writeNode(b, lo, precCompare+1); err != nil {
+	if err := e.writeNode(b, lo, precCompare+1); err != nil {
 		return err
 	}
 	b.WriteString(" AND ")
-	return writeNode(b, hi, precCompare+1)
+	return e.writeNode(b, hi, precCompare+1)
 }
 
-func writeIn(b *strings.Builder, lhs, list cql2.Node, negate bool) error {
-	if err := writeNode(b, lhs, precCompare); err != nil {
+func (e *encoder) writeIn(b *strings.Builder, lhs, list cql2.Node, negate bool) error {
+	if err := e.writeNode(b, lhs, precCompare); err != nil {
 		return err
 	}
 	if negate {
@@ -333,7 +349,7 @@ func writeIn(b *strings.Builder, lhs, list cql2.Node, negate bool) error {
 	if !ok {
 		// Fallback for tolerance: emit whatever the RHS is in parens.
 		b.WriteByte('(')
-		if err := writeNode(b, list, precTop); err != nil {
+		if err := e.writeNode(b, list, precTop); err != nil {
 			return err
 		}
 		b.WriteByte(')')
@@ -344,7 +360,7 @@ func writeIn(b *strings.Builder, lhs, list cql2.Node, negate bool) error {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		if err := writeNode(b, el, precTop); err != nil {
+		if err := e.writeNode(b, el, precTop); err != nil {
 			return err
 		}
 	}
@@ -352,8 +368,8 @@ func writeIn(b *strings.Builder, lhs, list cql2.Node, negate bool) error {
 	return nil
 }
 
-func writeLike(b *strings.Builder, lhs, pat cql2.Node, negate bool) error {
-	if err := writeNode(b, lhs, precCompare); err != nil {
+func (e *encoder) writeLike(b *strings.Builder, lhs, pat cql2.Node, negate bool) error {
+	if err := e.writeNode(b, lhs, precCompare); err != nil {
 		return err
 	}
 	if negate {
@@ -361,7 +377,7 @@ func writeLike(b *strings.Builder, lhs, pat cql2.Node, negate bool) error {
 	} else {
 		b.WriteString(" LIKE ")
 	}
-	return writeNode(b, pat, precCompare+1)
+	return e.writeNode(b, pat, precCompare+1)
 }
 
 // --- formatting helpers ------------------------------------------------

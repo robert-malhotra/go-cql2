@@ -14,9 +14,11 @@ import (
 // emitted in fixed order so identical ASTs always produce identical bytes.
 //
 // Geometry literals are delegated to github.com/example/go-cql2/geojson.
+//
+// Options are accepted for API symmetry but currently no option modifies
+// JSON output.
 func Encode(n cql2.Node, opts ...cql2.Option) ([]byte, error) {
-	// TODO(wave-3): consume opts
-	_ = opts
+	_ = cql2.ResolveOptions(opts...)
 	var buf bytes.Buffer
 	if err := encodeNode(&buf, n); err != nil {
 		return nil, err
