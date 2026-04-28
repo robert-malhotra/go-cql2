@@ -3,6 +3,7 @@ package wkt_test
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	cql2 "github.com/example/go-cql2"
@@ -259,6 +260,98 @@ func TestParseErrorPositionMidLine(t *testing.T) {
 	}
 	if ge.At.Line != 2 {
 		t.Fatalf("expected line 2, got %d (col %d)", ge.At.Line, ge.At.Column)
+	}
+}
+
+func TestParseZTag(t *testing.T) {
+	tests := []struct {
+		name     string
+		in       string
+		want     cql2.Geometry
+		wantEnc  string
+	}{
+		{
+			name:    "PointZ",
+			in:      "POINT Z (1 2 3)",
+			want:    &cql2.Point{Coord: cql2.Coord{X: 1, Y: 2, Z: 3, HasZ: true}},
+			wantEnc: "POINT(1 2 3)",
+		},
+		{
+			name: "LineStringZ",
+			in:   "LINESTRING Z (1 2 3, 4 5 6)",
+			want: &cql2.LineString{Coords: []cql2.Coord{
+				{X: 1, Y: 2, Z: 3, HasZ: true},
+				{X: 4, Y: 5, Z: 6, HasZ: true},
+			}},
+			wantEnc: "LINESTRING(1 2 3, 4 5 6)",
+		},
+		{
+			name: "PolygonZ",
+			in:   "POLYGON Z ((0 0 0, 1 0 0, 1 1 0, 0 0 0))",
+			want: &cql2.Polygon{Rings: [][]cql2.Coord{{
+				{X: 0, Y: 0, Z: 0, HasZ: true},
+				{X: 1, Y: 0, Z: 0, HasZ: true},
+				{X: 1, Y: 1, Z: 0, HasZ: true},
+				{X: 0, Y: 0, Z: 0, HasZ: true},
+			}}},
+			wantEnc: "POLYGON((0 0 0, 1 0 0, 1 1 0, 0 0 0))",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := wkt.Parse(tt.in)
+			if err != nil {
+				t.Fatalf("parse %q: %v", tt.in, err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("parse mismatch\n got: %#v\nwant: %#v", got, tt.want)
+			}
+			out, err := wkt.Encode(got)
+			if err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			if out != tt.wantEnc {
+				t.Fatalf("encode = %q, want %q", out, tt.wantEnc)
+			}
+			// Re-parse the canonical (no-Z) encoding.
+			got2, err := wkt.Parse(out)
+			if err != nil {
+				t.Fatalf("re-parse %q: %v", out, err)
+			}
+			if !reflect.DeepEqual(got2, tt.want) {
+				t.Fatalf("round-trip mismatch\n got: %#v\nwant: %#v", got2, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseMTagRejected(t *testing.T) {
+	for _, in := range []string{"POINT M (1 2 3)", "POINT ZM (1 2 3 4)"} {
+		_, err := wkt.Parse(in)
+		if err == nil {
+			t.Fatalf("expected error for %q", in)
+		}
+		var ge *cql2.GeometryError
+		if !errors.As(err, &ge) {
+			t.Fatalf("expected *cql2.GeometryError for %q, got %T (%v)", in, err, err)
+		}
+		if !strings.Contains(ge.Msg, "measure") {
+			t.Errorf("expected message about measure dimension, got %q", ge.Msg)
+		}
+	}
+}
+
+func TestParseZTagRequires3D(t *testing.T) {
+	_, err := wkt.Parse("POINT Z (1 2)")
+	if err == nil {
+		t.Fatal("expected error for POINT Z (1 2)")
+	}
+	var ge *cql2.GeometryError
+	if !errors.As(err, &ge) {
+		t.Fatalf("expected *cql2.GeometryError, got %T (%v)", err, err)
+	}
+	if !strings.Contains(ge.Msg, "3D") && !strings.Contains(ge.Msg, "Z") {
+		t.Errorf("expected message about Z/3D requirement, got %q", ge.Msg)
 	}
 }
 

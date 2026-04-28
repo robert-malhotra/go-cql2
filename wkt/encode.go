@@ -9,6 +9,10 @@ import (
 )
 
 // Encode serialises a cql2.Geometry to its canonical WKT representation.
+//
+// Note: the parser accepts an optional "Z" dimension tag (e.g. "POINT Z (1 2 3)")
+// on input, but Encode emits the canonical form without the tag — coordinate
+// dimensionality is implied by the number of components in each coord.
 func Encode(g cql2.Geometry) (string, error) {
 	if g == nil {
 		return "", encodeError("nil geometry")

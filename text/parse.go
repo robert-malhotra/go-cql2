@@ -22,6 +22,13 @@ func Parse(input string, opts ...cql2.Option) (cql2.Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Trailing input may live in the lookahead slot (already lexed) or in
+	// the un-lexed source remainder. Check both so we don't accept a stray
+	// trailing identifier just because the lexer happened to swallow it.
+	if p.hasPeek && p.peeked.kind != tokEOF {
+		t := p.peeked
+		return nil, p.syntaxErrorAt(t.pos, "unexpected trailing input", t.text)
+	}
 	p.skipWS()
 	if p.pos < len(p.src) {
 		return nil, p.syntaxErrorAt(p.curPos(), "unexpected trailing input", p.peekRune())
@@ -564,11 +571,10 @@ func (p *parser) parsePredicate() (cql2.Node, error) {
 		case keywordEqual(t2, "LIKE"):
 			return p.parseLikeTail(lhs, true)
 		default:
-			// Not a valid trailing predicate; put NOT back so caller (e.g. AND) can possibly consume.
-			// But the AND / OR logic only consumes their own keyword, not NOT.
-			// In practice, "<expr> NOT <expr>" without a recognised continuation is a syntax error.
-			p.putBack(notTok)
-			return nil, p.syntaxErrorAt(t2.pos, "expected BETWEEN, IN, or LIKE after NOT", t2.text)
+			// Not a valid trailing predicate. We can't put notTok back because the
+			// lookahead slot is already populated by t2; emit a syntax error pinned
+			// at the original NOT instead.
+			return nil, p.syntaxErrorAt(notTok.pos, "expected BETWEEN, IN, or LIKE after NOT", t2.text)
 		}
 	}
 	return lhs, nil
@@ -801,11 +807,22 @@ func (p *parser) parseUnary() (cql2.Node, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Represent unary minus as 0 - inner using a NumLit zero for a stable AST.
-		// Alternative: a dedicated "neg" op. The spec doesn't mandate either.
-		// Use OpSub with a zero literal so the AST stays in the existing operator set.
-		zero := &cql2.NumLit{Value: json.Number("0")}
-		return &cql2.Op{Op: cql2.OpSub, Args: []cql2.Node{zero, inner}}, nil
+		// Fold unary minus into a numeric literal. Double-negation strips the
+		// existing minus prefix. Non-numeric operands are rejected: CQL2 spec
+		// only allows unary minus on numeric literals.
+		nl, ok := inner.(*cql2.NumLit)
+		if !ok {
+			return nil, p.syntaxErrorAt(t.pos, "unary minus only applies to numeric literals", "-")
+		}
+		v := string(nl.Value)
+		if strings.HasPrefix(v, "-") {
+			v = v[1:]
+		} else {
+			v = "-" + v
+		}
+		folded := &cql2.NumLit{Value: json.Number(v)}
+		p.recordPos(folded, t.pos)
+		return folded, nil
 	}
 	if t.kind == tokPlus {
 		_, _ = p.consumeToken()
@@ -821,19 +838,52 @@ func (p *parser) parsePrimary() (cql2.Node, error) {
 	}
 	switch t.kind {
 	case tokLParen:
-		// Parenthesised expression.
+		// Parenthesised expression OR bare array literal: "(a, b, c)".
+		// Empty "()" is rejected as ambiguous.
+		la, err := p.peekToken()
+		if err != nil {
+			return nil, err
+		}
+		if la.kind == tokRParen {
+			_, _ = p.consumeToken()
+			return nil, p.syntaxErrorAt(la.pos, "empty parenthesised expression", la.text)
+		}
 		inner, err := p.parseExpression()
 		if err != nil {
 			return nil, err
 		}
-		rp, err := p.consumeToken()
+		nxt, err := p.peekToken()
 		if err != nil {
 			return nil, err
 		}
-		if rp.kind != tokRParen {
-			return nil, p.syntaxErrorAt(rp.pos, "expected ')' to close expression", rp.text)
+		switch nxt.kind {
+		case tokRParen:
+			_, _ = p.consumeToken()
+			return inner, nil
+		case tokComma:
+			elements := []cql2.Node{inner}
+			for {
+				_, _ = p.consumeToken() // consume ','
+				next, err := p.parseExpression()
+				if err != nil {
+					return nil, err
+				}
+				elements = append(elements, next)
+				peek, err := p.peekToken()
+				if err != nil {
+					return nil, err
+				}
+				if peek.kind == tokRParen {
+					_, _ = p.consumeToken()
+					return &cql2.ArrayLit{Elements: elements}, nil
+				}
+				if peek.kind != tokComma {
+					return nil, p.syntaxErrorAt(peek.pos, "expected ',' or ')' in array literal", peek.text)
+				}
+			}
+		default:
+			return nil, p.syntaxErrorAt(nxt.pos, "expected ')' to close expression", nxt.text)
 		}
-		return inner, nil
 	case tokNumber:
 		n := &cql2.NumLit{Value: json.Number(t.text)}
 		p.recordPos(n, t.pos)
@@ -948,29 +998,52 @@ func (p *parser) parseIntervalConstructor(at cql2.Pos) (cql2.Node, error) {
 	if err := p.expectKind(tokLParen, "("); err != nil {
 		return nil, err
 	}
-	startS, err := p.expectStringLiteral()
+	startEP, err := p.parseIntervalArg(at, "start")
 	if err != nil {
 		return nil, err
 	}
 	if err := p.expectKind(tokComma, ","); err != nil {
 		return nil, err
 	}
-	endS, err := p.expectStringLiteral()
+	endEP, err := p.parseIntervalArg(at, "end")
 	if err != nil {
 		return nil, err
 	}
 	if err := p.expectKind(tokRParen, ")"); err != nil {
 		return nil, err
 	}
-	startEP, err := parseIntervalEndpoint(startS)
-	if err != nil {
-		return nil, p.syntaxErrorAt(at, fmt.Sprintf("malformed INTERVAL start: %v", err), startS)
-	}
-	endEP, err := parseIntervalEndpoint(endS)
-	if err != nil {
-		return nil, p.syntaxErrorAt(at, fmt.Sprintf("malformed INTERVAL end: %v", err), endS)
-	}
 	return &cql2.IntervalLit{Start: startEP, End: endEP}, nil
+}
+
+// parseIntervalArg accepts either a single-quoted string literal (parsed via
+// parseIntervalEndpoint into a TimestampLit/DateLit/Unbounded) or an unquoted
+// identifier / quoted-identifier (built into a *PropertyRef).
+func (p *parser) parseIntervalArg(at cql2.Pos, which string) (cql2.IntervalEndpoint, error) {
+	t, err := p.peekToken()
+	if err != nil {
+		return nil, err
+	}
+	switch t.kind {
+	case tokString:
+		_, _ = p.consumeToken()
+		ep, err := parseIntervalEndpoint(t.text)
+		if err != nil {
+			return nil, p.syntaxErrorAt(at, fmt.Sprintf("malformed INTERVAL %s: %v", which, err), t.text)
+		}
+		return ep, nil
+	case tokIdent:
+		_, _ = p.consumeToken()
+		pr := &cql2.PropertyRef{Name: t.text}
+		p.recordPos(pr, t.pos)
+		return pr, nil
+	case tokQuotedIdent:
+		_, _ = p.consumeToken()
+		pr := &cql2.PropertyRef{Name: t.text}
+		p.recordPos(pr, t.pos)
+		return pr, nil
+	default:
+		return nil, p.syntaxErrorAt(t.pos, "expected string literal or property reference in INTERVAL", t.text)
+	}
 }
 
 func parseIntervalEndpoint(s string) (cql2.IntervalEndpoint, error) {

@@ -99,11 +99,11 @@ func (e *encoder) writeNode(b *strings.Builder, n cql2.Node, parentPrec int) err
 		b.WriteString("')")
 		return nil
 	case *cql2.IntervalLit:
-		b.WriteString("INTERVAL('")
-		b.WriteString(formatEndpoint(x.Start))
-		b.WriteString("','")
-		b.WriteString(formatEndpoint(x.End))
-		b.WriteString("')")
+		b.WriteString("INTERVAL(")
+		writeIntervalEndpoint(b, x.Start)
+		b.WriteByte(',')
+		writeIntervalEndpoint(b, x.End)
+		b.WriteByte(')')
 		return nil
 	case *cql2.GeomLit:
 		s, err := wkt.Encode(x.Geom)
@@ -467,4 +467,17 @@ func formatEndpoint(ep cql2.IntervalEndpoint) string {
 		return v.Value.UTC().Format("2006-01-02")
 	}
 	return ".."
+}
+
+// writeIntervalEndpoint emits an INTERVAL endpoint. String forms (timestamp,
+// date, unbounded) are wrapped in single quotes; property references are
+// emitted unquoted using the standard property-ref formatting.
+func writeIntervalEndpoint(b *strings.Builder, ep cql2.IntervalEndpoint) {
+	if pr, ok := ep.(*cql2.PropertyRef); ok {
+		writePropertyRef(b, pr.Name)
+		return
+	}
+	b.WriteByte('\'')
+	b.WriteString(formatEndpoint(ep))
+	b.WriteByte('\'')
 }

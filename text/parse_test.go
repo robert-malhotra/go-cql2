@@ -427,6 +427,210 @@ func TestParse_LowercaseKeywords(t *testing.T) {
 	roundTrip(t, n)
 }
 
+// TestParse_NoPanicOnNumberAdjacentNot is a regression check for a former
+// putBack-on-full-lookahead panic in parseNot's recovery path.
+func TestParse_NoPanicOnNumberAdjacentNot(t *testing.T) {
+	inputs := []string{
+		"00NOT",
+		"1NOT",
+		"5NOTBETWEEN",
+	}
+	for _, in := range inputs {
+		_, err := Parse(in)
+		if err == nil {
+			t.Errorf("expected error for %q, got nil", in)
+			continue
+		}
+		var syn *cql2.SyntaxError
+		if !errors.As(err, &syn) {
+			t.Errorf("expected *SyntaxError for %q, got %T: %v", in, err, err)
+		}
+	}
+}
+
+func TestParse_IntervalWithPropertyArgs(t *testing.T) {
+	// Both args are properties.
+	{
+		n := mustParse(t, `INTERVAL(starts_at, ends_at)`)
+		il, ok := n.(*cql2.IntervalLit)
+		if !ok {
+			t.Fatalf("expected IntervalLit, got %T", n)
+		}
+		ps, ok := il.Start.(*cql2.PropertyRef)
+		if !ok {
+			t.Fatalf("expected start PropertyRef, got %T", il.Start)
+		}
+		if ps.Name != "starts_at" {
+			t.Errorf("start name = %q, want starts_at", ps.Name)
+		}
+		pe, ok := il.End.(*cql2.PropertyRef)
+		if !ok {
+			t.Fatalf("expected end PropertyRef, got %T", il.End)
+		}
+		if pe.Name != "ends_at" {
+			t.Errorf("end name = %q, want ends_at", pe.Name)
+		}
+		// Round-trip via Encode -> Parse.
+		encoded, err := Encode(n)
+		if err != nil {
+			t.Fatalf("Encode: %v", err)
+		}
+		if strings.Contains(encoded, "'starts_at'") || strings.Contains(encoded, "'ends_at'") {
+			t.Errorf("expected unquoted property names in encoded form, got %q", encoded)
+		}
+		n2 := mustParse(t, encoded)
+		if !cql2.Equal(n, n2) {
+			t.Fatalf("round-trip mismatch.\nencoded: %s\nbefore: %#v\nafter:  %#v", encoded, n, n2)
+		}
+	}
+	// Mixed: literal start, property end.
+	{
+		n := mustParse(t, `INTERVAL('2020-01-01', ends_at)`)
+		il, ok := n.(*cql2.IntervalLit)
+		if !ok {
+			t.Fatalf("expected IntervalLit, got %T", n)
+		}
+		if _, ok := il.Start.(*cql2.DateLit); !ok {
+			t.Errorf("expected start DateLit, got %T", il.Start)
+		}
+		if _, ok := il.End.(*cql2.PropertyRef); !ok {
+			t.Errorf("expected end PropertyRef, got %T", il.End)
+		}
+		roundTrip(t, n)
+	}
+	// Mixed: property start, unbounded end.
+	{
+		n := mustParse(t, `INTERVAL(starts_at, '..')`)
+		il, ok := n.(*cql2.IntervalLit)
+		if !ok {
+			t.Fatalf("expected IntervalLit, got %T", n)
+		}
+		if _, ok := il.Start.(*cql2.PropertyRef); !ok {
+			t.Errorf("expected start PropertyRef, got %T", il.Start)
+		}
+		if _, ok := il.End.(*cql2.Unbounded); !ok {
+			t.Errorf("expected end Unbounded, got %T", il.End)
+		}
+		roundTrip(t, n)
+	}
+}
+
+func TestParse_BareArrayLiteral(t *testing.T) {
+	// Strings.
+	n := mustParse(t, `('a', 'b', 'c')`)
+	want := &cql2.ArrayLit{Elements: []cql2.Node{
+		&cql2.StringLit{Value: "a"},
+		&cql2.StringLit{Value: "b"},
+		&cql2.StringLit{Value: "c"},
+	}}
+	if !cql2.Equal(n, want) {
+		t.Fatalf("got %#v\nwant %#v", n, want)
+	}
+	encoded, err := Encode(n)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if encoded != `('a', 'b', 'c')` {
+		t.Errorf("encoded = %q, want %q", encoded, `('a', 'b', 'c')`)
+	}
+	n2 := mustParse(t, encoded)
+	if !cql2.Equal(n, n2) {
+		t.Fatalf("round-trip mismatch")
+	}
+
+	// Numbers.
+	n = mustParse(t, `(1, 2, 3)`)
+	wantNum := &cql2.ArrayLit{Elements: []cql2.Node{
+		&cql2.NumLit{Value: json.Number("1")},
+		&cql2.NumLit{Value: json.Number("2")},
+		&cql2.NumLit{Value: json.Number("3")},
+	}}
+	if !cql2.Equal(n, wantNum) {
+		t.Fatalf("got %#v\nwant %#v", n, wantNum)
+	}
+	roundTrip(t, n)
+
+	// Parenthesised arithmetic must still parse as parenthesised expression, not array.
+	n = mustParse(t, `(a + b)`)
+	if _, ok := n.(*cql2.ArrayLit); ok {
+		t.Fatalf("unexpected ArrayLit for (a + b): %#v", n)
+	}
+	if op, ok := n.(*cql2.Op); !ok || op.Op != cql2.OpAdd {
+		t.Fatalf("expected Add op, got %#v", n)
+	}
+
+	// Empty parens must be rejected.
+	if _, err := Parse(`()`); err == nil {
+		t.Fatal("expected error for empty parens")
+	} else {
+		var se *cql2.SyntaxError
+		if !errors.As(err, &se) {
+			t.Errorf("expected *SyntaxError for `()`, got %T: %v", err, err)
+		}
+	}
+}
+
+func TestParse_NegativeNumberFolding(t *testing.T) {
+	// -1 folds to NumLit("-1").
+	n := mustParse(t, `-1`)
+	nl, ok := n.(*cql2.NumLit)
+	if !ok {
+		t.Fatalf("expected NumLit, got %T", n)
+	}
+	if nl.Value != json.Number("-1") {
+		t.Errorf("Value = %q, want -1", nl.Value)
+	}
+	enc, err := Encode(n)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if enc != "-1" {
+		t.Errorf("encoded = %q, want -1", enc)
+	}
+
+	// Double minus folds back to positive.
+	n = mustParse(t, `--1`)
+	nl, ok = n.(*cql2.NumLit)
+	if !ok {
+		t.Fatalf("expected NumLit, got %T", n)
+	}
+	if nl.Value != json.Number("1") {
+		t.Errorf("Value = %q, want 1", nl.Value)
+	}
+
+	// 5 + -1 → Op{Add, [NumLit("5"), NumLit("-1")]}.
+	n = mustParse(t, `5 + -1`)
+	want := &cql2.Op{Op: cql2.OpAdd, Args: []cql2.Node{
+		&cql2.NumLit{Value: json.Number("5")},
+		&cql2.NumLit{Value: json.Number("-1")},
+	}}
+	if !cql2.Equal(n, want) {
+		t.Fatalf("got %#v\nwant %#v", n, want)
+	}
+	roundTrip(t, n)
+
+	// a > -10 with comparison.
+	n = mustParse(t, `a > -10`)
+	want2 := &cql2.Op{Op: cql2.OpGt, Args: []cql2.Node{
+		&cql2.PropertyRef{Name: "a"},
+		&cql2.NumLit{Value: json.Number("-10")},
+	}}
+	if !cql2.Equal(n, want2) {
+		t.Fatalf("got %#v\nwant %#v", n, want2)
+	}
+	roundTrip(t, n)
+
+	// Unary minus on non-numeric returns SyntaxError.
+	if _, err := Parse(`-a`); err == nil {
+		t.Fatal("expected error for `-a`")
+	} else {
+		var se *cql2.SyntaxError
+		if !errors.As(err, &se) {
+			t.Errorf("expected *SyntaxError for `-a`, got %T: %v", err, err)
+		}
+	}
+}
+
 // roundTrip ensures Encode then Parse produces an equal AST.
 func roundTrip(t *testing.T, n cql2.Node) {
 	t.Helper()

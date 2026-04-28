@@ -113,6 +113,32 @@ func TestEncode_Interval(t *testing.T) {
 	}
 }
 
+func TestEncode_IntervalWithProperty(t *testing.T) {
+	il := &cql2.IntervalLit{
+		Start: &cql2.PropertyRef{Name: "starts_at"},
+		End:   &cql2.PropertyRef{Name: "ends_at"},
+	}
+	s, err := Encode(il)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s != "INTERVAL(starts_at,ends_at)" {
+		t.Errorf("got %q, want %q", s, "INTERVAL(starts_at,ends_at)")
+	}
+
+	il = &cql2.IntervalLit{
+		Start: &cql2.DateLit{Value: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)},
+		End:   &cql2.PropertyRef{Name: "ends_at"},
+	}
+	s, err = Encode(il)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s != "INTERVAL('2020-01-01',ends_at)" {
+		t.Errorf("got %q, want %q", s, "INTERVAL('2020-01-01',ends_at)")
+	}
+}
+
 func TestEncode_BBox(t *testing.T) {
 	s, err := Encode(&cql2.BBoxLit{Coords: []float64{-180, -90, 180, 90}})
 	if err != nil {

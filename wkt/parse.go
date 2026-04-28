@@ -122,24 +122,147 @@ func (p *parser) parseGeometry() (cql2.Geometry, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Optional dimension tag: Z / M / ZM. CQL2 does not support a measure
+	// dimension (M); reject M and ZM with a clear error. Accept Z and require
+	// 3D coordinates in the body.
+	zTag := false
+	if dim, dimPos, ok := p.tryDimensionTag(); ok {
+		switch dim {
+		case "Z":
+			zTag = true
+		case "M", "ZM":
+			return nil, p.errorAt(dimPos, "CQL2 does not support measure dimension (%q)", dim)
+		default:
+			return nil, p.errorAt(dimPos, "unknown dimension tag %q", dim)
+		}
+	}
+	var (
+		g   cql2.Geometry
+		gerr error
+	)
 	switch kw {
 	case "POINT":
-		return p.parsePointTail()
+		g, gerr = p.parsePointTail()
 	case "LINESTRING":
-		return p.parseLineStringTail()
+		g, gerr = p.parseLineStringTail()
 	case "POLYGON":
-		return p.parsePolygonTail()
+		g, gerr = p.parsePolygonTail()
 	case "MULTIPOINT":
-		return p.parseMultiPointTail()
+		g, gerr = p.parseMultiPointTail()
 	case "MULTILINESTRING":
-		return p.parseMultiLineStringTail()
+		g, gerr = p.parseMultiLineStringTail()
 	case "MULTIPOLYGON":
-		return p.parseMultiPolygonTail()
+		g, gerr = p.parseMultiPolygonTail()
 	case "GEOMETRYCOLLECTION":
-		return p.parseGeometryCollectionTail()
+		g, gerr = p.parseGeometryCollectionTail()
 	default:
 		return nil, p.errorAt(kwPos, "unknown geometry type %q", kw)
 	}
+	if gerr != nil {
+		return nil, gerr
+	}
+	if zTag {
+		if err := requireZ(g, p, kwPos); err != nil {
+			return nil, err
+		}
+	}
+	return g, nil
+}
+
+// tryDimensionTag looks ahead for an alphabetic token (Z/M/ZM, case-insensitive)
+// that is not the start of an EMPTY keyword and not a geometry-type keyword.
+// Returns the upper-cased tag, its position, and true if consumed.
+func (p *parser) tryDimensionTag() (string, cql2.Pos, bool) {
+	saved := *p
+	p.skipWS()
+	start := p.pos
+	startPos := p.curPos()
+	for p.pos < len(p.src) {
+		ch := p.src[p.pos]
+		if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') {
+			p.advance(1)
+			continue
+		}
+		break
+	}
+	if p.pos == start {
+		*p = saved
+		return "", cql2.Pos{}, false
+	}
+	tok := strings.ToUpper(p.src[start:p.pos])
+	switch tok {
+	case "Z", "M", "ZM":
+		return tok, startPos, true
+	}
+	// Not a dimension tag (likely "EMPTY" or unrelated). Roll back.
+	*p = saved
+	return "", cql2.Pos{}, false
+}
+
+// requireZ validates that every Coord in g has HasZ set. Returns a
+// *cql2.GeometryError otherwise.
+func requireZ(g cql2.Geometry, p *parser, at cql2.Pos) error {
+	check := func(c cql2.Coord) error {
+		if !c.HasZ {
+			return p.errorAt(at, "Z dimension tag requires 3D coordinates")
+		}
+		return nil
+	}
+	switch v := g.(type) {
+	case *cql2.Point:
+		if v.Empty {
+			return nil
+		}
+		return check(v.Coord)
+	case *cql2.LineString:
+		for _, c := range v.Coords {
+			if err := check(c); err != nil {
+				return err
+			}
+		}
+	case *cql2.Polygon:
+		for _, r := range v.Rings {
+			for _, c := range r {
+				if err := check(c); err != nil {
+					return err
+				}
+			}
+		}
+	case *cql2.MultiPoint:
+		for _, pt := range v.Points {
+			if pt.Empty {
+				continue
+			}
+			if err := check(pt.Coord); err != nil {
+				return err
+			}
+		}
+	case *cql2.MultiLineStr:
+		for _, ls := range v.Lines {
+			for _, c := range ls.Coords {
+				if err := check(c); err != nil {
+					return err
+				}
+			}
+		}
+	case *cql2.MultiPolygon:
+		for _, pg := range v.Polys {
+			for _, r := range pg.Rings {
+				for _, c := range r {
+					if err := check(c); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	case *cql2.GeometryColl:
+		for _, sub := range v.Geoms {
+			if err := requireZ(sub, p, at); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // tryEmpty checks for the "EMPTY" keyword (case-insensitive). Returns true if consumed.
