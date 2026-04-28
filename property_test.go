@@ -60,13 +60,12 @@ func genLeaf(rt *rapid.T) cql2.Node {
 	}
 }
 
-// genNumLit produces a non-negative integer literal. We avoid negatives
-// because CQL2-Text has no negative-number literal: the text parser models
-// `-1` as `0 - 1` (a Sub op), so a NumLit{"-1"} would not survive a text
-// round-trip. JSON has no such restriction but we use the same generator
-// for both round-trips for simplicity.
+// genNumLit produces an integer literal in [-1_000_000, 1_000_000]. v0.6
+// landed unary-minus folding in the text parser (NumLit("-1") rather than
+// the previous Sub(0, 1) desugar), so negatives now round-trip cleanly in
+// both encodings.
 func genNumLit(rt *rapid.T) cql2.Node {
-	v := rapid.Int64Range(0, 1_000_000).Draw(rt, "num")
+	v := rapid.Int64Range(-1_000_000, 1_000_000).Draw(rt, "num")
 	return &cql2.NumLit{Value: json.Number(strconv.FormatInt(v, 10))}
 }
 
@@ -244,8 +243,8 @@ func genNode(rt *rapid.T, depth int) cql2.Node {
 				genStringLit(rt),
 			},
 		}
-	case 4: // BETWEEN: PropertyRef, lo, hi (with lo < hi); non-negative
-		lo := rapid.Int64Range(0, 999_999).Draw(rt, "betLo")
+	case 4: // BETWEEN: PropertyRef, lo, hi (with lo < hi).
+		lo := rapid.Int64Range(-1_000_000, 999_999).Draw(rt, "betLo")
 		hiOff := rapid.Int64Range(1, 1_000).Draw(rt, "betHiOff")
 		hi := lo + hiOff
 		return &cql2.Op{

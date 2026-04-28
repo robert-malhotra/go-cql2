@@ -10,7 +10,13 @@
 *.out
 coverage*
 *.prof
-testdata/fuzz/
+# Auto-discovered fuzz corpus entries are ignored (Go names them by hex hash);
+# named regression seeds — committed deliberately — are tracked. We .gitignore
+# only the hash-named files so seeds added on purpose stay in the repo.
+testdata/fuzz/**/[0-9a-f][0-9a-f][0-9a-f][0-9a-f]*
+# Rapid keeps per-run failure replay logs under testdata/rapid/. They're for
+# local debugging only.
+testdata/rapid/
 
 # Editors / IDEs
 .idea/

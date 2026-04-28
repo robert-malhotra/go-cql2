@@ -11,15 +11,20 @@ root for round-trip conformance verification.
 - Commit: `ecbc50437ab0e338671a8a3b1bda520e50976eed` ("SP edits for publication")
 - Cloned: 2026-04-27
 
-The full upstream corpus contains 120 text files and 110 JSON files. Of
-those, the parser in this repo today (Wave 4a) successfully parses
-approximately 84 pairs in both encodings; the rest exercise features
-(case-sensitive temporal operators like `t_finishedBy`, `Z`-suffixed 3D
-geometries, function calls in JSON whose `op` is treated as an unknown
-operator instead of a function, `INTERVAL(<property>, <property>)` in
-text) that the parser does not yet implement uniformly across both
-encodings. The examples vendored here are a representative selection
-that round-trips today.
+The full upstream corpus contains 120 text files and 110 JSON files.
+The 33 vendored pairs are a representative selection covering Basic
+CQL2, Advanced Comparison, Spatial (basic + 3D), Temporal (including
+property-arg INTERVAL), Array, Functions (both forms), CASEI/ACCENTI,
+property-property comparison, and arithmetic.
+
+Examples 01–23 were vendored in Wave 4a (v0.5). Examples 24–33 were
+added in Wave B (v0.6), once the relevant feature gaps had been
+closed:
+
+- 24–27 require case-insensitive JSON op matching (the upstream uses
+  `t_finishedBy` etc.) plus `INTERVAL(prop, prop)` round-trip
+- 28 requires `POLYGON Z (...)` parsing in WKT
+- 31–33 require unknown JSON op strings to fall back to `*FunctionCall`
 
 ## Layout
 

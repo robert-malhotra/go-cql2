@@ -159,6 +159,12 @@ func (e *encoder) writeNode(b *strings.Builder, n cql2.Node, parentPrec int) err
 func (e *encoder) writeOp(b *strings.Builder, x *cql2.Op, parentPrec int) error {
 	myPrec := opPrec(x.Op)
 	wrap := myPrec < parentPrec && myPrec >= precOr
+	// Comparison operators are non-associative in CQL2 text (`a < b < c`
+	// is not valid), so a comparison directly inside another comparison
+	// must be parenthesized even at equal precedence.
+	if !wrap && myPrec == parentPrec && myPrec == precCompare {
+		wrap = true
+	}
 	// StyleVerbose: always wrap any binary/logical operator in parens, even
 	// when not strictly required for precedence. Function-style ops (spatial,
 	// temporal, array, casei, accenti) emit as atoms and aren't wrapped.
@@ -453,8 +459,10 @@ func formatTimestamp(t time.Time) string {
 	if t.Nanosecond() == 0 {
 		return t.Format("2006-01-02T15:04:05Z")
 	}
-	// Emit milliseconds.
-	return t.Format("2006-01-02T15:04:05.000Z")
+	// Preserve sub-second precision (RFC 3339 nanos with trailing zeros
+	// stripped). Matches the JSON encoder so cross-encoding round-trip is
+	// byte-stable for sub-second timestamps.
+	return t.Format(time.RFC3339Nano)
 }
 
 func formatEndpoint(ep cql2.IntervalEndpoint) string {

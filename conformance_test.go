@@ -35,6 +35,21 @@ import (
 
 const ogcCorpusDir = "testdata/ogc"
 
+// relaxedJSONByteEquality lists examples whose JSON re-encode is intentionally
+// non-byte-equal to the on-disk source. For these, step 4 is satisfied by a
+// semantic check (Parse(encoded) == astJSON via cql2.Equal) instead of a
+// canonicalized byte comparison. See testdata/ogc/diffs.md for the rationale
+// per example.
+var relaxedJSONByteEquality = map[string]string{
+	"24_t_finishedby_interval_props": "operator name canonicalized: t_finishedBy → t_finishedby (CQL2 ops are case-insensitive; AST stores the canonical lowercased form for these temporal ops)",
+	"25_t_metby_mixed_interval":      "operator name canonicalized: t_metBy → t_metby",
+	"26_t_overlappedby":              "operator name canonicalized: t_overlappedBy → t_overlappedby",
+	"27_t_startedby":                 "operator name canonicalized: t_startedBy → t_startedby",
+	"31_func_avg_inline_op":          "inline-op form normalized to function-form on encode: {\"op\":\"avg\",\"args\":...} → {\"function\":{\"name\":\"avg\",\"args\":...}}. Unknown op names parse to *FunctionCall, which always emits the function-form on encode.",
+	"32_func_avg_inline_compare":     "inline-op form normalized to function-form on encode (nested case)",
+	"33_func_buffer_inline_op":       "inline-op form normalized to function-form on encode",
+}
+
 // canonicalizeJSON parses b as JSON and returns a normalized representation
 // suitable for structural comparison. Numbers are decoded into float64,
 // which collapses integer-valued floats (e.g. 180.0 / 180) into a single
@@ -115,10 +130,24 @@ func TestOGCCorpus(t *testing.T) {
 					stem, astText, astJSON)
 			}
 
-			// Step 4: JSON re-encode round-trip (structural).
+			// Step 4: JSON re-encode round-trip.
+			// Strict (default): canonicalize source vs encoded and require equality.
+			// Relaxed (listed in relaxedJSONByteEquality): require only semantic
+			// round-trip — Parse(encoded) must be Equal to astJSON.
 			encJSON, err := cql2.Encode(astJSON, cql2.EncodingJSON)
 			if err != nil {
 				t.Errorf("%s: Encode(astJSON, EncodingJSON) failed: %v", stem, err)
+			} else if reason, relaxed := relaxedJSONByteEquality[stem]; relaxed {
+				ast2, err := cql2.Parse(encJSON)
+				if err != nil {
+					t.Errorf("%s: re-Parse(encoded JSON) failed: %v\nencoded: %s\nrelaxed reason: %s",
+						stem, err, encJSON, reason)
+				} else if !cql2.Equal(astJSON, ast2) {
+					t.Errorf("%s: JSON semantic round-trip failed\n"+
+						"  encoded: %s\n"+
+						"  relaxed reason: %s",
+						stem, encJSON, reason)
+				}
 			} else {
 				wantCanon := canonicalizeJSON(t, stem, "source", jsonBytes)
 				gotCanon := canonicalizeJSON(t, stem, "encoded", encJSON)
