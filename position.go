@@ -36,8 +36,8 @@ func (m *PositionMap) Of(n Node) (Pos, bool) {
 	return p, ok
 }
 
-// set records a position; used internally by parsers.
-func (m *PositionMap) set(n Node, p Pos) {
+// Set records a position. Called by parsers in subpackages.
+func (m *PositionMap) Set(n Node, p Pos) {
 	if m == nil {
 		return
 	}
