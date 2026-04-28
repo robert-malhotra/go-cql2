@@ -43,11 +43,9 @@ func (p *jparser) recordPos(n cql2.Node, path string) {
 	p.cfg.Positions.Set(n, cql2.Pos{JSONPath: path})
 }
 
-// canonicalOps maps lowercased operator names to their canonical Operator
-// constant. The CQL2 spec treats operator names as case-insensitive, but the
-// canonical form (e.g. "isNull", "t_finishedby") is what the AST stores and
-// what encoders emit, so we look up by the lowercased form and yield the
-// canonical Operator value.
+// canonicalOps maps lowercased operator names to the canonical Operator
+// value. CQL2 op names are case-insensitive on input, but the AST and
+// encoders use the canonical form (e.g. `isNull`, not `isnull`).
 var canonicalOps = func() map[string]cql2.Operator {
 	all := []cql2.Operator{
 		cql2.OpAnd, cql2.OpOr, cql2.OpNot,
@@ -255,8 +253,6 @@ func (p *jparser) parseOp(obj map[string]stdjson.RawMessage, path string) (cql2.
 		return nil, serr(joinPath(path, "op"),
 			fmt.Sprintf("\"op\" must be a string: %v", err))
 	}
-	// Operators are case-insensitive per the CQL2 spec; look up by lowercased
-	// form to find the canonical Operator value (e.g. "isNull" not "isnull").
 	canonical, isKnown := canonicalOps[strings.ToLower(opStr)]
 
 	rawArgs, ok := obj["args"]

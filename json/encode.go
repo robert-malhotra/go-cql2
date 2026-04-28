@@ -61,7 +61,7 @@ func encodeNode(buf *bytes.Buffer, n cql2.Node) error {
 		return nil
 	case *cql2.TimestampLit:
 		buf.WriteString(`{"timestamp":`)
-		if err := writeJSONString(buf, x.Value.Format("2006-01-02T15:04:05.999999999Z07:00")); err != nil {
+		if err := writeJSONString(buf, cql2.FormatTimestamp(x.Value)); err != nil {
 			return err
 		}
 		buf.WriteByte('}')
@@ -154,7 +154,7 @@ func writeEndpoint(buf *bytes.Buffer, e cql2.IntervalEndpoint) error {
 	case *cql2.Unbounded:
 		return writeJSONString(buf, "..")
 	case *cql2.TimestampLit:
-		return writeJSONString(buf, v.Value.Format("2006-01-02T15:04:05.999999999Z07:00"))
+		return writeJSONString(buf, cql2.FormatTimestamp(v.Value))
 	case *cql2.DateLit:
 		return writeJSONString(buf, v.Value.Format("2006-01-02"))
 	case *cql2.PropertyRef:

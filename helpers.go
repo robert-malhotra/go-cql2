@@ -1,6 +1,21 @@
 package cql2
 
-import "reflect"
+import (
+	"reflect"
+	"time"
+)
+
+// FormatTimestamp formats t in RFC 3339 form for use as a CQL2 timestamp
+// literal. Sub-second precision is preserved when present; the zero-nanosecond
+// case emits the shorter `YYYY-MM-DDTHH:MM:SSZ` form. Both encoders share
+// this so cross-encoding round-trip is byte-stable.
+func FormatTimestamp(t time.Time) string {
+	t = t.UTC()
+	if t.Nanosecond() == 0 {
+		return t.Format("2006-01-02T15:04:05Z")
+	}
+	return t.Format(time.RFC3339Nano)
+}
 
 // Kind classifies the runtime result type of evaluating a Node.
 // This is distinct from NodeKind, which classifies the AST shape.

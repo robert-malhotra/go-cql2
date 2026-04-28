@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	cql2 "github.com/example/go-cql2"
 	"github.com/example/go-cql2/wkt"
@@ -90,7 +89,7 @@ func (e *encoder) writeNode(b *strings.Builder, n cql2.Node, parentPrec int) err
 		return nil
 	case *cql2.TimestampLit:
 		b.WriteString("TIMESTAMP('")
-		b.WriteString(formatTimestamp(x.Value))
+		b.WriteString(cql2.FormatTimestamp(x.Value))
 		b.WriteString("')")
 		return nil
 	case *cql2.DateLit:
@@ -454,23 +453,12 @@ func formatFloat(f float64) string {
 	return strconv.FormatFloat(f, 'g', -1, 64)
 }
 
-func formatTimestamp(t time.Time) string {
-	t = t.UTC()
-	if t.Nanosecond() == 0 {
-		return t.Format("2006-01-02T15:04:05Z")
-	}
-	// Preserve sub-second precision (RFC 3339 nanos with trailing zeros
-	// stripped). Matches the JSON encoder so cross-encoding round-trip is
-	// byte-stable for sub-second timestamps.
-	return t.Format(time.RFC3339Nano)
-}
-
 func formatEndpoint(ep cql2.IntervalEndpoint) string {
 	switch v := ep.(type) {
 	case *cql2.Unbounded, nil:
 		return ".."
 	case *cql2.TimestampLit:
-		return formatTimestamp(v.Value)
+		return cql2.FormatTimestamp(v.Value)
 	case *cql2.DateLit:
 		return v.Value.UTC().Format("2006-01-02")
 	}

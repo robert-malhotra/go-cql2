@@ -371,6 +371,12 @@ func keywordEqual(t token, kw string) bool {
 	return strings.EqualFold(t.text, kw)
 }
 
+// isWKTDimTag reports whether t is one of the WKT dimension-tag idents
+// (Z / M / ZM) that may appear between a geometry-type keyword and `(`.
+func isWKTDimTag(t token) bool {
+	return keywordEqual(t, "Z") || keywordEqual(t, "M") || keywordEqual(t, "ZM")
+}
+
 // operatorFunctionNames maps lowercase function-style operator names to the AST Operator constant.
 var operatorFunctionNames = map[string]cql2.Operator{
 	"casei":   cql2.OpCaseI,
@@ -932,16 +938,11 @@ func (p *parser) parseIdentPrimary(t token) (cql2.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Geometry literals can have an optional dimension tag (`Z`/`M`/`ZM`)
-	// between the type keyword and `(`, so the lookahead may be an ident.
-	// We special-case this BEFORE falling through to the bare-property path,
-	// since POLYGON/POINT/etc. are reserved geometry keywords, not properties.
+	// Geometry keywords are reserved, never property names; route them before
+	// the bare-property fallback. The lookahead may be `(`, `EMPTY`, or a
+	// dimension tag (`Z`/`M`/`ZM`).
 	if geometryKeywords[lower] {
-		// `POLYGON EMPTY` (la is "EMPTY" ident), `POLYGON (` (la is `(`),
-		// or `POLYGON Z (` (la is `Z`/`M`/`ZM` ident). parseGeometryLiteral
-		// handles all three.
-		if la.kind == tokLParen ||
-			(la.kind == tokIdent && (keywordEqual(la, "EMPTY") || keywordEqual(la, "Z") || keywordEqual(la, "M") || keywordEqual(la, "ZM"))) {
+		if la.kind == tokLParen || keywordEqual(la, "EMPTY") || isWKTDimTag(la) {
 			return p.parseGeometryLiteral(t)
 		}
 	}
@@ -963,12 +964,8 @@ func (p *parser) parseIdentPrimary(t token) (cql2.Node, error) {
 		return p.parseBBoxConstructor(t.pos)
 	}
 
-	// Geometry literals (the unambiguous LParen case).
-	if geometryKeywords[lower] {
-		return p.parseGeometryLiteral(t)
-	}
-
-	// Otherwise: function-call (which may desugar into an Op).
+	// Otherwise: function-call (which may desugar into an Op). Geometry
+	// keywords are routed earlier — see the dispatch above the LParen check.
 	return p.parseFunctionCall(t)
 }
 
@@ -1149,12 +1146,9 @@ func (p *parser) parseGeometryLiteral(t token) (cql2.Node, error) {
 		}
 		return &cql2.GeomLit{Geom: g}, nil
 	}
-	// Optional dimension tag: POINT Z (...), LINESTRING Z (...), etc. We
-	// consume the tag here so the subsequent '(' check passes; the captured
-	// span (computed from startOff) still includes the tag, so wkt.Parse sees
-	// it and can validate 3D coords. We accept any ident here and let
-	// wkt.Parse reject unsupported dimensions (M, ZM) with a clear error.
-	if la.kind == tokIdent && (keywordEqual(la, "Z") || keywordEqual(la, "M") || keywordEqual(la, "ZM")) {
+	// Consume any dimension tag so the next-token check passes; the captured
+	// span (from startOff) still includes the tag, which wkt.Parse re-scans.
+	if isWKTDimTag(la) {
 		_, _ = p.consumeToken()
 		la, err = p.peekToken()
 		if err != nil {
