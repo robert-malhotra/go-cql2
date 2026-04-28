@@ -932,6 +932,20 @@ func (p *parser) parseIdentPrimary(t token) (cql2.Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Geometry literals can have an optional dimension tag (`Z`/`M`/`ZM`)
+	// between the type keyword and `(`, so the lookahead may be an ident.
+	// We special-case this BEFORE falling through to the bare-property path,
+	// since POLYGON/POINT/etc. are reserved geometry keywords, not properties.
+	if geometryKeywords[lower] {
+		// `POLYGON EMPTY` (la is "EMPTY" ident), `POLYGON (` (la is `(`),
+		// or `POLYGON Z (` (la is `Z`/`M`/`ZM` ident). parseGeometryLiteral
+		// handles all three.
+		if la.kind == tokLParen ||
+			(la.kind == tokIdent && (keywordEqual(la, "EMPTY") || keywordEqual(la, "Z") || keywordEqual(la, "M") || keywordEqual(la, "ZM"))) {
+			return p.parseGeometryLiteral(t)
+		}
+	}
+
 	if la.kind != tokLParen {
 		// Bare property reference.
 		return &cql2.PropertyRef{Name: t.text}, nil
@@ -949,7 +963,7 @@ func (p *parser) parseIdentPrimary(t token) (cql2.Node, error) {
 		return p.parseBBoxConstructor(t.pos)
 	}
 
-	// Geometry literals: capture the WKT span and delegate to wkt.Parse.
+	// Geometry literals (the unambiguous LParen case).
 	if geometryKeywords[lower] {
 		return p.parseGeometryLiteral(t)
 	}
@@ -1134,6 +1148,18 @@ func (p *parser) parseGeometryLiteral(t token) (cql2.Node, error) {
 			return nil, p.syntaxErrorAt(t.pos, fmt.Sprintf("invalid geometry literal: %v", err), p.src[startOff:endOff])
 		}
 		return &cql2.GeomLit{Geom: g}, nil
+	}
+	// Optional dimension tag: POINT Z (...), LINESTRING Z (...), etc. We
+	// consume the tag here so the subsequent '(' check passes; the captured
+	// span (computed from startOff) still includes the tag, so wkt.Parse sees
+	// it and can validate 3D coords. We accept any ident here and let
+	// wkt.Parse reject unsupported dimensions (M, ZM) with a clear error.
+	if la.kind == tokIdent && (keywordEqual(la, "Z") || keywordEqual(la, "M") || keywordEqual(la, "ZM")) {
+		_, _ = p.consumeToken()
+		la, err = p.peekToken()
+		if err != nil {
+			return nil, err
+		}
 	}
 	if la.kind != tokLParen {
 		return nil, p.syntaxErrorAt(la.pos, "expected '(' after geometry-type keyword", la.text)
