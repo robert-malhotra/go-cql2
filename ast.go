@@ -119,3 +119,4 @@ func (*FunctionCall) isNode()        {}
 func (*TimestampLit) isIntervalEndpoint() {}
 func (*DateLit) isIntervalEndpoint()      {}
 func (*Unbounded) isIntervalEndpoint()    {}
+func (*PropertyRef) isIntervalEndpoint()  {}

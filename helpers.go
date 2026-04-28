@@ -277,6 +277,9 @@ func cloneEndpoint(e IntervalEndpoint) IntervalEndpoint {
 		return &c
 	case *Unbounded:
 		return &Unbounded{}
+	case *PropertyRef:
+		c := *v
+		return &c
 	}
 	return e
 }

@@ -191,6 +191,8 @@ func endpointAsNode(e IntervalEndpoint) Node {
 		return v
 	case *DateLit:
 		return v
+	case *PropertyRef:
+		return v
 	}
 	return nil
 }
