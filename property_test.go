@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	cql2 "github.com/example/go-cql2"
-	_ "github.com/example/go-cql2/codecs"
+	cql2 "github.com/exergy-dev/go-cql2"
+	_ "github.com/exergy-dev/go-cql2/codecs"
 	"pgregory.net/rapid"
 )
 
@@ -344,6 +344,78 @@ func TestProperty_JSONRoundTrip(t *testing.T) {
 				string(js), renderForReport(n2))
 		}
 	})
+}
+
+// TestProperty_CrossEncodingRoundTrip pins the v1 invariant that an AST
+// encodes to text and to JSON in two parallel paths, both of which parse
+// back to an Equal AST. This is stronger than the within-encoding tests:
+// it confirms text and JSON encoders agree on the same semantic shape.
+func TestProperty_CrossEncodingRoundTrip(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		n := genNode(rt, 4)
+
+		text, err := cql2.Encode(n, cql2.EncodingText)
+		if err != nil {
+			rt.Fatalf("encode text: %v\n  ast: %#v", err, n)
+		}
+		js, err := cql2.Encode(n, cql2.EncodingJSON)
+		if err != nil {
+			rt.Fatalf("encode json: %v\n  ast: %#v", err, n)
+		}
+
+		fromText, err := cql2.Parse(text)
+		if err != nil {
+			rt.Fatalf("parse text %q: %v", string(text), err)
+		}
+		fromJSON, err := cql2.Parse(js)
+		if err != nil {
+			rt.Fatalf("parse json %s: %v", string(js), err)
+		}
+		if !cql2.Equal(fromText, fromJSON) {
+			rt.Fatalf("text-derived and json-derived ASTs differ:\n"+
+				"  text:    %s\n  json:    %s\n  via-text: %s\n  via-json: %s",
+				string(text), string(js),
+				renderForReport(fromText), renderForReport(fromJSON))
+		}
+	})
+}
+
+// TestProperty_EncodeIsIdempotent pins that Encode is a fixed-point
+// modulo Parse: encoding once and again on a re-parsed AST yields the
+// same bytes. Catches encoder canonicalisation bugs that produce
+// different output on equivalent inputs.
+func TestProperty_EncodeIsIdempotent(t *testing.T) {
+	cases := []struct {
+		name string
+		enc  cql2.Encoding
+	}{
+		{"text", cql2.EncodingText},
+		{"json", cql2.EncodingJSON},
+	}
+	for _, tc := range cases {
+		enc := tc.enc
+		t.Run(tc.name, func(t *testing.T) {
+			rapid.Check(t, func(rt *rapid.T) {
+				n := genNode(rt, 4)
+				first, err := cql2.Encode(n, enc)
+				if err != nil {
+					rt.Fatalf("encode #1: %v", err)
+				}
+				n2, err := cql2.Parse(first)
+				if err != nil {
+					rt.Fatalf("parse #1 %q: %v", string(first), err)
+				}
+				second, err := cql2.Encode(n2, enc)
+				if err != nil {
+					rt.Fatalf("encode #2: %v", err)
+				}
+				if string(first) != string(second) {
+					rt.Fatalf("encode is not idempotent:\n  first:  %s\n  second: %s",
+						string(first), string(second))
+				}
+			})
+		})
+	}
 }
 
 // nodeCounter is a Visitor that counts every node it sees (excluding the

@@ -2,14 +2,14 @@ package json
 
 import (
 	"bytes"
-	stdjson "encoding/json"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
-	cql2 "github.com/example/go-cql2"
-	"github.com/example/go-cql2/geojson"
+	cql2 "github.com/exergy-dev/go-cql2"
+	"github.com/exergy-dev/go-cql2/geojson"
 )
 
 // Parse decodes a CQL2-JSON document into a cql2.Node.
@@ -21,11 +21,14 @@ import (
 func Parse(data []byte, opts ...cql2.Option) (cql2.Node, error) {
 	cfg := cql2.ResolveOptions(opts...)
 	p := &jparser{cfg: cfg}
-	n, err := p.parseNode(stdjson.RawMessage(data), "")
+	n, err := p.parseNode(json.RawMessage(data), "")
 	if err != nil {
 		return nil, err
 	}
 	if err := checkConformance(n, cfg); err != nil {
+		return nil, err
+	}
+	if err := cql2.Validate(n); err != nil {
 		return nil, err
 	}
 	return n, nil
@@ -33,8 +36,27 @@ func Parse(data []byte, opts ...cql2.Option) (cql2.Node, error) {
 
 // jparser threads cfg through parsing for position recording and conformance.
 type jparser struct {
-	cfg *cql2.Config
+	cfg   *cql2.Config
+	depth int
 }
+
+// enterDepth bumps the recursion counter and rejects inputs that exceed
+// cfg.MaxDepth. Must be paired with a deferred leaveDepth.
+func (p *jparser) enterDepth(path string) error {
+	p.depth++
+	if p.cfg != nil && p.cfg.MaxDepth >= 0 {
+		max := p.cfg.MaxDepth
+		if max == 0 {
+			max = cql2.DefaultMaxDepth
+		}
+		if p.depth > max {
+			return serr(path, fmt.Sprintf("expression nesting exceeds limit (max %d)", max))
+		}
+	}
+	return nil
+}
+
+func (p *jparser) leaveDepth() { p.depth-- }
 
 func (p *jparser) recordPos(n cql2.Node, path string) {
 	if p == nil || p.cfg == nil || p.cfg.Positions == nil || n == nil {
@@ -129,7 +151,11 @@ func trimWS(raw []byte) []byte {
 }
 
 // parseNode dispatches by first non-whitespace byte and recurses.
-func (p *jparser) parseNode(raw stdjson.RawMessage, path string) (cql2.Node, error) {
+func (p *jparser) parseNode(raw json.RawMessage, path string) (cql2.Node, error) {
+	if err := p.enterDepth(path); err != nil {
+		return nil, err
+	}
+	defer p.leaveDepth()
 	t := trimWS(raw)
 	if len(t) == 0 {
 		return nil, serr(path, "empty value")
@@ -141,13 +167,13 @@ func (p *jparser) parseNode(raw stdjson.RawMessage, path string) (cql2.Node, err
 	switch c := t[0]; {
 	case c == 't' || c == 'f':
 		var b bool
-		if err = stdjson.Unmarshal(t, &b); err != nil {
+		if err = json.Unmarshal(t, &b); err != nil {
 			return nil, serr(path, fmt.Sprintf("invalid boolean: %v", err))
 		}
 		n = &cql2.BoolLit{Value: b}
 	case c == 'n':
 		var v any
-		if err = stdjson.Unmarshal(t, &v); err != nil {
+		if err = json.Unmarshal(t, &v); err != nil {
 			return nil, serr(path, fmt.Sprintf("invalid null: %v", err))
 		}
 		if v != nil {
@@ -156,7 +182,7 @@ func (p *jparser) parseNode(raw stdjson.RawMessage, path string) (cql2.Node, err
 		n = &cql2.NullLit{}
 	case c == '"':
 		var s string
-		if err = stdjson.Unmarshal(t, &s); err != nil {
+		if err = json.Unmarshal(t, &s); err != nil {
 			return nil, serr(path, fmt.Sprintf("invalid string: %v", err))
 		}
 		n = &cql2.StringLit{Value: s}
@@ -177,21 +203,21 @@ func (p *jparser) parseNode(raw stdjson.RawMessage, path string) (cql2.Node, err
 }
 
 func parseNumber(raw []byte, path string) (cql2.Node, error) {
-	// Validate via stdjson.Number, then preserve verbatim source text.
+	// Validate via json.Number, then preserve verbatim source text.
 	s := string(raw)
-	// stdjson.Number uses the same grammar as JSON numbers; try ParseFloat
+	// json.Number uses the same grammar as JSON numbers; try ParseFloat
 	// and ParseInt to validate.
 	if _, err := strconv.ParseFloat(s, 64); err != nil {
 		// Fallback: also try big-int-shaped numbers ParseFloat handles those too,
 		// so a failure here is a real syntax issue.
 		return nil, serr(path, fmt.Sprintf("invalid number: %v", err))
 	}
-	return &cql2.NumLit{Value: stdjson.Number(s)}, nil
+	return &cql2.NumLit{Value: json.Number(s)}, nil
 }
 
 func (p *jparser) parseArray(raw []byte, path string) (cql2.Node, error) {
-	var elems []stdjson.RawMessage
-	if err := stdjson.Unmarshal(raw, &elems); err != nil {
+	var elems []json.RawMessage
+	if err := json.Unmarshal(raw, &elems); err != nil {
 		return nil, serr(path, fmt.Sprintf("invalid array: %v", err))
 	}
 	out := make([]cql2.Node, len(elems))
@@ -206,8 +232,8 @@ func (p *jparser) parseArray(raw []byte, path string) (cql2.Node, error) {
 }
 
 func (p *jparser) parseObject(raw []byte, path string) (cql2.Node, error) {
-	var obj map[string]stdjson.RawMessage
-	dec := stdjson.NewDecoder(bytes.NewReader(raw))
+	var obj map[string]json.RawMessage
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(&obj); err != nil {
 		return nil, serr(path, fmt.Sprintf("invalid object: %v", err))
 	}
@@ -215,7 +241,7 @@ func (p *jparser) parseObject(raw []byte, path string) (cql2.Node, error) {
 	// Geometry object: any object with type=<geometry-type-string>.
 	if rawType, ok := obj["type"]; ok {
 		var typ string
-		if err := stdjson.Unmarshal(rawType, &typ); err == nil {
+		if err := json.Unmarshal(rawType, &typ); err == nil {
 			if _, isGeom := geometryTypes[typ]; isGeom {
 				return parseGeometry(raw, path)
 			}
@@ -224,18 +250,39 @@ func (p *jparser) parseObject(raw []byte, path string) (cql2.Node, error) {
 
 	switch {
 	case has(obj, "op"):
+		if err := rejectExtraKeys(obj, path, "op", "args"); err != nil {
+			return nil, err
+		}
 		return p.parseOp(obj, path)
 	case has(obj, "function"):
+		if err := rejectExtraKeys(obj, path, "function"); err != nil {
+			return nil, err
+		}
 		return p.parseFunction(obj, path)
 	case has(obj, "property"):
+		if err := rejectExtraKeys(obj, path, "property"); err != nil {
+			return nil, err
+		}
 		return parseProperty(obj, path)
 	case has(obj, "timestamp"):
+		if err := rejectExtraKeys(obj, path, "timestamp"); err != nil {
+			return nil, err
+		}
 		return parseTimestamp(obj, path)
 	case has(obj, "date"):
-		return parseDate(obj, path)
+		if err := rejectExtraKeys(obj, path, "date"); err != nil {
+			return nil, err
+		}
+		return p.parseDate(obj, path)
 	case has(obj, "interval"):
-		return parseInterval(obj, path)
+		if err := rejectExtraKeys(obj, path, "interval"); err != nil {
+			return nil, err
+		}
+		return p.parseInterval(obj, path)
 	case has(obj, "bbox"):
+		if err := rejectExtraKeys(obj, path, "bbox"); err != nil {
+			return nil, err
+		}
 		return parseBBox(obj, path)
 	}
 
@@ -243,13 +290,30 @@ func (p *jparser) parseObject(raw []byte, path string) (cql2.Node, error) {
 		keysOf(obj), objectKeys)
 }
 
-func (p *jparser) parseOp(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error) {
+// rejectExtraKeys reports the first unexpected key in obj relative to allowed.
+// Geometry objects (RFC 7946) tolerate foreign members and bypass this check;
+// CQL2 predicate objects do not.
+func rejectExtraKeys(obj map[string]json.RawMessage, path string, allowed ...string) error {
+	allowSet := make(map[string]struct{}, len(allowed))
+	for _, a := range allowed {
+		allowSet[a] = struct{}{}
+	}
+	for k := range obj {
+		if _, ok := allowSet[k]; ok {
+			continue
+		}
+		return serr(joinPath(path, k), fmt.Sprintf("unexpected key %q (allowed: %s)", k, strings.Join(allowed, ", ")))
+	}
+	return nil
+}
+
+func (p *jparser) parseOp(obj map[string]json.RawMessage, path string) (cql2.Node, error) {
 	rawOp, ok := obj["op"]
 	if !ok {
 		return nil, serr(path, "missing \"op\"")
 	}
 	var opStr string
-	if err := stdjson.Unmarshal(rawOp, &opStr); err != nil {
+	if err := json.Unmarshal(rawOp, &opStr); err != nil {
 		return nil, serr(joinPath(path, "op"),
 			fmt.Sprintf("\"op\" must be a string: %v", err))
 	}
@@ -259,8 +323,8 @@ func (p *jparser) parseOp(obj map[string]stdjson.RawMessage, path string) (cql2.
 	if !ok {
 		return nil, serr(path, "operator object missing \"args\"")
 	}
-	var rawList []stdjson.RawMessage
-	if err := stdjson.Unmarshal(rawArgs, &rawList); err != nil {
+	var rawList []json.RawMessage
+	if err := json.Unmarshal(rawArgs, &rawList); err != nil {
 		return nil, serr(joinPath(path, "args"),
 			fmt.Sprintf("\"args\" must be an array: %v", err))
 	}
@@ -281,10 +345,10 @@ func (p *jparser) parseOp(obj map[string]stdjson.RawMessage, path string) (cql2.
 	return &cql2.Op{Op: canonical, Args: args}, nil
 }
 
-func (p *jparser) parseFunction(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error) {
+func (p *jparser) parseFunction(obj map[string]json.RawMessage, path string) (cql2.Node, error) {
 	rawFn := obj["function"]
-	var fn map[string]stdjson.RawMessage
-	if err := stdjson.Unmarshal(rawFn, &fn); err != nil {
+	var fn map[string]json.RawMessage
+	if err := json.Unmarshal(rawFn, &fn); err != nil {
 		return nil, serr(joinPath(path, "function"),
 			fmt.Sprintf("\"function\" must be an object: %v", err))
 	}
@@ -293,7 +357,7 @@ func (p *jparser) parseFunction(obj map[string]stdjson.RawMessage, path string) 
 		return nil, serr(joinPath(path, "function"), "missing \"name\"")
 	}
 	var name string
-	if err := stdjson.Unmarshal(rawName, &name); err != nil {
+	if err := json.Unmarshal(rawName, &name); err != nil {
 		return nil, serr(joinPath(path, "function", "name"),
 			fmt.Sprintf("\"name\" must be a string: %v", err))
 	}
@@ -301,8 +365,8 @@ func (p *jparser) parseFunction(obj map[string]stdjson.RawMessage, path string) 
 	if !ok {
 		return nil, serr(joinPath(path, "function"), "missing \"args\"")
 	}
-	var rawList []stdjson.RawMessage
-	if err := stdjson.Unmarshal(rawArgs, &rawList); err != nil {
+	var rawList []json.RawMessage
+	if err := json.Unmarshal(rawArgs, &rawList); err != nil {
 		return nil, serr(joinPath(path, "function", "args"),
 			fmt.Sprintf("\"args\" must be an array: %v", err))
 	}
@@ -317,18 +381,18 @@ func (p *jparser) parseFunction(obj map[string]stdjson.RawMessage, path string) 
 	return &cql2.FunctionCall{Name: name, Args: args}, nil
 }
 
-func parseProperty(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error) {
+func parseProperty(obj map[string]json.RawMessage, path string) (cql2.Node, error) {
 	var name string
-	if err := stdjson.Unmarshal(obj["property"], &name); err != nil {
+	if err := json.Unmarshal(obj["property"], &name); err != nil {
 		return nil, serr(joinPath(path, "property"),
 			fmt.Sprintf("\"property\" must be a string: %v", err))
 	}
 	return &cql2.PropertyRef{Name: name}, nil
 }
 
-func parseTimestamp(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error) {
+func parseTimestamp(obj map[string]json.RawMessage, path string) (cql2.Node, error) {
 	var s string
-	if err := stdjson.Unmarshal(obj["timestamp"], &s); err != nil {
+	if err := json.Unmarshal(obj["timestamp"], &s); err != nil {
 		return nil, serr(joinPath(path, "timestamp"),
 			fmt.Sprintf("\"timestamp\" must be a string: %v", err))
 	}
@@ -340,13 +404,13 @@ func parseTimestamp(obj map[string]stdjson.RawMessage, path string) (cql2.Node, 
 	return &cql2.TimestampLit{Value: tt}, nil
 }
 
-func parseDate(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error) {
+func (p *jparser) parseDate(obj map[string]json.RawMessage, path string) (cql2.Node, error) {
 	var s string
-	if err := stdjson.Unmarshal(obj["date"], &s); err != nil {
+	if err := json.Unmarshal(obj["date"], &s); err != nil {
 		return nil, serr(joinPath(path, "date"),
 			fmt.Sprintf("\"date\" must be a string: %v", err))
 	}
-	tt, err := time.ParseInLocation("2006-01-02", s, time.UTC)
+	tt, err := time.ParseInLocation("2006-01-02", s, dateLocation(p.cfg))
 	if err != nil {
 		return nil, serr(joinPath(path, "date"),
 			fmt.Sprintf("invalid YYYY-MM-DD date: %v", err))
@@ -354,11 +418,20 @@ func parseDate(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error
 	return &cql2.DateLit{Value: tt}, nil
 }
 
-func parseInterval(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error) {
+// dateLocation returns the timezone used for bare DATE literals,
+// honouring WithDateTimezone and falling back to UTC.
+func dateLocation(cfg *cql2.Config) *time.Location {
+	if cfg != nil && cfg.DateTimezone != nil {
+		return cfg.DateTimezone
+	}
+	return time.UTC
+}
+
+func (p *jparser) parseInterval(obj map[string]json.RawMessage, path string) (cql2.Node, error) {
 	// Endpoints may be either JSON strings (literal date/timestamp/"..") or
 	// JSON objects of the form {"property":"<name>"}.
-	var rawEndpoints []stdjson.RawMessage
-	if err := stdjson.Unmarshal(obj["interval"], &rawEndpoints); err != nil {
+	var rawEndpoints []json.RawMessage
+	if err := json.Unmarshal(obj["interval"], &rawEndpoints); err != nil {
 		return nil, serr(joinPath(path, "interval"),
 			fmt.Sprintf("\"interval\" must be an array of two endpoints: %v", err))
 	}
@@ -366,7 +439,7 @@ func parseInterval(obj map[string]stdjson.RawMessage, path string) (cql2.Node, e
 		return nil, serr(joinPath(path, "interval"),
 			fmt.Sprintf("interval must have exactly 2 endpoints, got %d", len(rawEndpoints)))
 	}
-	parseEnd := func(raw stdjson.RawMessage, idx int) (cql2.IntervalEndpoint, error) {
+	parseEnd := func(raw json.RawMessage, idx int) (cql2.IntervalEndpoint, error) {
 		t := trimWS(raw)
 		if len(t) == 0 {
 			return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
@@ -375,41 +448,72 @@ func parseInterval(obj map[string]stdjson.RawMessage, path string) (cql2.Node, e
 		switch t[0] {
 		case '"':
 			var s string
-			if err := stdjson.Unmarshal(t, &s); err != nil {
+			if err := json.Unmarshal(t, &s); err != nil {
 				return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
 					fmt.Sprintf("invalid interval endpoint string: %v", err))
 			}
 			if s == ".." {
 				return &cql2.Unbounded{}, nil
 			}
+			endpointPath := joinPath(path, "interval", strconv.Itoa(idx))
 			if tt, err := time.Parse(time.RFC3339Nano, s); err == nil {
-				return &cql2.TimestampLit{Value: tt}, nil
+				ts := &cql2.TimestampLit{Value: tt}
+				p.recordPos(ts, endpointPath)
+				return ts, nil
 			}
-			if tt, err := time.ParseInLocation("2006-01-02", s, time.UTC); err == nil {
-				return &cql2.DateLit{Value: tt}, nil
+			if tt, err := time.ParseInLocation("2006-01-02", s, dateLocation(p.cfg)); err == nil {
+				d := &cql2.DateLit{Value: tt}
+				p.recordPos(d, endpointPath)
+				return d, nil
 			}
 			return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
 				fmt.Sprintf("invalid interval endpoint %q", s))
 		case '{':
-			var sub map[string]stdjson.RawMessage
-			if err := stdjson.Unmarshal(t, &sub); err != nil {
+			var sub map[string]json.RawMessage
+			if err := json.Unmarshal(t, &sub); err != nil {
 				return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
 					fmt.Sprintf("invalid interval endpoint object: %v", err))
 			}
-			rawProp, ok := sub["property"]
-			if !ok {
-				return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
-					"interval endpoint object must have a \"property\" key")
+			if rawProp, ok := sub["property"]; ok {
+				var name string
+				if err := json.Unmarshal(rawProp, &name); err != nil {
+					return nil, serr(joinPath(path, "interval", strconv.Itoa(idx), "property"),
+						fmt.Sprintf("\"property\" must be a string: %v", err))
+				}
+				pr := &cql2.PropertyRef{Name: name}
+				p.recordPos(pr, joinPath(path, "interval", strconv.Itoa(idx)))
+				return pr, nil
 			}
-			var name string
-			if err := stdjson.Unmarshal(rawProp, &name); err != nil {
-				return nil, serr(joinPath(path, "interval", strconv.Itoa(idx), "property"),
-					fmt.Sprintf("\"property\" must be a string: %v", err))
+			// Function-call endpoint: {"op":"name",...} or {"function":{...}}.
+			if _, hasOp := sub["op"]; hasOp {
+				node, err := p.parseNode(t, joinPath(path, "interval", strconv.Itoa(idx)))
+				if err != nil {
+					return nil, err
+				}
+				fn, ok := node.(*cql2.FunctionCall)
+				if !ok {
+					return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
+						"interval endpoint must be a literal, property, or function call")
+				}
+				return fn, nil
 			}
-			return &cql2.PropertyRef{Name: name}, nil
+			if _, hasFn := sub["function"]; hasFn {
+				node, err := p.parseNode(t, joinPath(path, "interval", strconv.Itoa(idx)))
+				if err != nil {
+					return nil, err
+				}
+				fn, ok := node.(*cql2.FunctionCall)
+				if !ok {
+					return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
+						"interval endpoint must be a literal, property, or function call")
+				}
+				return fn, nil
+			}
+			return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
+				"interval endpoint object must have \"property\", \"op\", or \"function\" key")
 		default:
 			return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
-				fmt.Sprintf("invalid interval endpoint: expected string or {\"property\":...}, got %q", t[0]))
+				fmt.Sprintf("invalid interval endpoint: expected string, property ref, or function call, got %q", t[0]))
 		}
 	}
 	start, err := parseEnd(rawEndpoints[0], 0)
@@ -423,9 +527,9 @@ func parseInterval(obj map[string]stdjson.RawMessage, path string) (cql2.Node, e
 	return &cql2.IntervalLit{Start: start, End: end}, nil
 }
 
-func parseBBox(obj map[string]stdjson.RawMessage, path string) (cql2.Node, error) {
+func parseBBox(obj map[string]json.RawMessage, path string) (cql2.Node, error) {
 	var coords []float64
-	if err := stdjson.Unmarshal(obj["bbox"], &coords); err != nil {
+	if err := json.Unmarshal(obj["bbox"], &coords); err != nil {
 		return nil, serr(joinPath(path, "bbox"),
 			fmt.Sprintf("\"bbox\" must be a number array: %v", err))
 	}
@@ -490,12 +594,12 @@ func joinPath(base string, segments ...string) string {
 	return out
 }
 
-func has(obj map[string]stdjson.RawMessage, k string) bool {
+func has(obj map[string]json.RawMessage, k string) bool {
 	_, ok := obj[k]
 	return ok
 }
 
-func keysOf(obj map[string]stdjson.RawMessage) string {
+func keysOf(obj map[string]json.RawMessage) string {
 	if len(obj) == 0 {
 		return "{}"
 	}

@@ -1,4 +1,4 @@
-module github.com/example/go-cql2
+module github.com/exergy-dev/go-cql2
 
 go 1.23
 

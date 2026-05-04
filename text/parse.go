@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
-	cql2 "github.com/example/go-cql2"
-	"github.com/example/go-cql2/wkt"
+	cql2 "github.com/exergy-dev/go-cql2"
+	"github.com/exergy-dev/go-cql2/wkt"
 )
 
 // Parse parses CQL2 Text input into an AST.
@@ -34,6 +36,9 @@ func Parse(input string, opts ...cql2.Option) (cql2.Node, error) {
 		return nil, p.syntaxErrorAt(p.curPos(), "unexpected trailing input", p.peekRune())
 	}
 	if err := checkConformance(n, cfg); err != nil {
+		return nil, err
+	}
+	if err := cql2.Validate(n); err != nil {
 		return nil, err
 	}
 	return n, nil
@@ -90,7 +95,29 @@ type parser struct {
 	// One-token lookahead.
 	hasPeek bool
 	peeked  token
+
+	// depth is the current expression nesting depth, bumped on entry to
+	// parseExpression and decremented on exit; checked against cfg.MaxDepth.
+	depth int
 }
+
+// enterDepth bumps the recursion counter and rejects inputs that exceed
+// cfg.MaxDepth. Must be paired with a deferred call to leaveDepth.
+func (p *parser) enterDepth(at cql2.Pos) error {
+	p.depth++
+	if p.cfg != nil && p.cfg.MaxDepth >= 0 {
+		max := p.cfg.MaxDepth
+		if max == 0 {
+			max = cql2.DefaultMaxDepth
+		}
+		if p.depth > max {
+			return p.syntaxErrorAt(at, fmt.Sprintf("expression nesting exceeds limit (max %d)", max), "")
+		}
+	}
+	return nil
+}
+
+func (p *parser) leaveDepth() { p.depth-- }
 
 // recordPos sets a position on the parser's PositionMap if active.
 func (p *parser) recordPos(n cql2.Node, pos cql2.Pos) {
@@ -261,31 +288,58 @@ func (p *parser) nextToken() (token, error) {
 	if ch >= '0' && ch <= '9' {
 		return p.lexNumber(pos)
 	}
-	if ch == '.' {
-		// possibly a number starting with '.'
-		if p.pos+1 < len(p.src) && p.src[p.pos+1] >= '0' && p.src[p.pos+1] <= '9' {
-			return p.lexNumber(pos)
+	if ch < utf8.RuneSelf {
+		if isIdentStartByte(ch) {
+			return p.lexIdent(pos)
 		}
+		return token{}, p.syntaxErrorAt(pos, "unexpected character", string(ch))
 	}
-	if isIdentStart(ch) {
+	// Non-ASCII: decode rune and check the Unicode identifier rules from
+	// Annex B's propertyName grammar.
+	r, _ := utf8.DecodeRuneInString(p.src[p.pos:])
+	if isIdentStartRune(r) {
 		return p.lexIdent(pos)
 	}
-	return token{}, p.syntaxErrorAt(pos, "unexpected character", string(ch))
+	return token{}, p.syntaxErrorAt(pos, "unexpected character", string(r))
 }
 
-func isIdentStart(ch byte) bool {
-	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_'
+// isIdentStartByte is the ASCII fast-path for identifier-start chars
+// permitted by Annex B (colon, underscore, A-Z, a-z).
+func isIdentStartByte(ch byte) bool {
+	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_' || ch == ':'
 }
 
-func isIdentCont(ch byte) bool {
-	return isIdentStart(ch) || (ch >= '0' && ch <= '9') || ch == ':' || ch == '.'
+// isIdentStartRune covers the full Annex B identifierStart range: the ASCII
+// fast-path plus any Unicode letter (covers Latin-1 supplement, Greek,
+// Cyrillic, CJK, and the rest of the spec's enumerated blocks).
+func isIdentStartRune(r rune) bool {
+	if r < utf8.RuneSelf {
+		return isIdentStartByte(byte(r))
+	}
+	return unicode.IsLetter(r)
+}
+
+// isIdentContRune covers identifier continuation: all start chars, plus
+// '.', digits, and combining/diacritical marks.
+func isIdentContRune(r rune) bool {
+	if r < utf8.RuneSelf {
+		ch := byte(r)
+		return isIdentStartByte(ch) || (ch >= '0' && ch <= '9') || ch == '.'
+	}
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r)
 }
 
 func (p *parser) lexIdent(pos cql2.Pos) (token, error) {
 	start := p.pos
-	p.advance(1)
-	for p.pos < len(p.src) && isIdentCont(p.src[p.pos]) {
-		p.advance(1)
+	// First rune is already known to satisfy isIdentStartRune.
+	_, sz := utf8.DecodeRuneInString(p.src[p.pos:])
+	p.advance(sz)
+	for p.pos < len(p.src) {
+		r, rsz := utf8.DecodeRuneInString(p.src[p.pos:])
+		if !isIdentContRune(r) {
+			break
+		}
+		p.advance(rsz)
 	}
 	return token{kind: tokIdent, text: p.src[start:p.pos], pos: pos}, nil
 }
@@ -325,6 +379,38 @@ func (p *parser) lexString(pos cql2.Pos) (token, error) {
 			p.advance(1)
 			return token{kind: tokString, text: b.String(), pos: pos}, nil
 		}
+		// /req/cql2-text/escaping: backslash escape for embedded quote and
+		// the seven C-style control characters.
+		if ch == '\\' && p.pos+1 < len(p.src) {
+			esc := p.src[p.pos+1]
+			var out byte
+			switch esc {
+			case '\'':
+				out = '\''
+			case '\\':
+				out = '\\'
+			case 'a':
+				out = '\a'
+			case 'b':
+				out = '\b'
+			case 't':
+				out = '\t'
+			case 'n':
+				out = '\n'
+			case 'v':
+				out = '\v'
+			case 'f':
+				out = '\f'
+			case 'r':
+				out = '\r'
+			default:
+				return token{}, p.syntaxErrorAt(pos,
+					fmt.Sprintf("unknown escape sequence \\%c in string literal", esc), "")
+			}
+			b.WriteByte(out)
+			p.advance(2)
+			continue
+		}
 		b.WriteByte(ch)
 		p.advance(1)
 	}
@@ -333,18 +419,26 @@ func (p *parser) lexString(pos cql2.Pos) (token, error) {
 
 func (p *parser) lexNumber(pos cql2.Pos) (token, error) {
 	start := p.pos
-	// integer part
+	// Integer part: required.
 	for p.pos < len(p.src) && p.src[p.pos] >= '0' && p.src[p.pos] <= '9' {
 		p.advance(1)
 	}
-	// fraction
+	if p.pos == start {
+		return token{}, p.syntaxErrorAt(pos, "malformed number", "")
+	}
+	// Optional fraction. JSON requires ≥1 digit after the decimal point;
+	// matching that constraint keeps NumLit.Value (a json.Number) round-trippable.
 	if p.pos < len(p.src) && p.src[p.pos] == '.' {
 		p.advance(1)
+		fracStart := p.pos
 		for p.pos < len(p.src) && p.src[p.pos] >= '0' && p.src[p.pos] <= '9' {
 			p.advance(1)
 		}
+		if p.pos == fracStart {
+			return token{}, p.syntaxErrorAt(pos, "malformed number: missing fraction digits", p.src[start:p.pos])
+		}
 	}
-	// exponent
+	// Optional exponent.
 	if p.pos < len(p.src) && (p.src[p.pos] == 'e' || p.src[p.pos] == 'E') {
 		p.advance(1)
 		if p.pos < len(p.src) && (p.src[p.pos] == '+' || p.src[p.pos] == '-') {
@@ -419,6 +513,24 @@ var geometryKeywords = map[string]bool{
 	"geometrycollection": true,
 }
 
+// reservedKeywords lists identifiers that may not appear as bare property
+// references or as user-defined function-call names. Operator-keyword
+// functions (S_INTERSECTS, T_AFTER, CASEI, …) and typed-literal constructors
+// (TIMESTAMP, DATE, INTERVAL, BBOX) are routed by their own switches before
+// the reserved check fires, so they are still accepted in their proper
+// positions. The set mirrors text/encode.go isBareIdent so an AST cannot
+// be encoded as text the parser would later reject.
+var reservedKeywords = map[string]bool{
+	"and": true, "or": true, "not": true,
+	"like": true, "between": true, "in": true, "is": true, "null": true,
+	"true": true, "false": true,
+	"date": true, "timestamp": true, "interval": true, "bbox": true,
+	"point": true, "linestring": true, "polygon": true,
+	"multipoint": true, "multilinestring": true, "multipolygon": true,
+	"geometrycollection": true,
+	"casei":              true, "accenti": true, "div": true,
+}
+
 // --- recursive-descent grammar -----------------------------------------
 
 // expression = orExpr
@@ -430,6 +542,10 @@ var geometryKeywords = map[string]bool{
 //            | "NOT" "BETWEEN" ... | "NOT" "IN" ... | "NOT" "LIKE" ...
 
 func (p *parser) parseExpression() (cql2.Node, error) {
+	if err := p.enterDepth(p.curPos()); err != nil {
+		return nil, err
+	}
+	defer p.leaveDepth()
 	return p.parseOr()
 }
 
@@ -446,7 +562,7 @@ func (p *parser) parseOr() (cql2.Node, error) {
 		if !keywordEqual(t, "OR") {
 			return left, nil
 		}
-		_, _ = p.consumeToken()
+		opTok, _ := p.consumeToken()
 		right, err := p.parseAnd()
 		if err != nil {
 			return nil, err
@@ -455,7 +571,9 @@ func (p *parser) parseOr() (cql2.Node, error) {
 		if op, ok := left.(*cql2.Op); ok && op.Op == cql2.OpOr {
 			op.Args = append(op.Args, right)
 		} else {
-			left = &cql2.Op{Op: cql2.OpOr, Args: []cql2.Node{left, right}}
+			n := &cql2.Op{Op: cql2.OpOr, Args: []cql2.Node{left, right}}
+			p.recordPos(n, opTok.pos)
+			left = n
 		}
 	}
 }
@@ -473,7 +591,7 @@ func (p *parser) parseAnd() (cql2.Node, error) {
 		if !keywordEqual(t, "AND") {
 			return left, nil
 		}
-		_, _ = p.consumeToken()
+		opTok, _ := p.consumeToken()
 		right, err := p.parseNot()
 		if err != nil {
 			return nil, err
@@ -481,7 +599,9 @@ func (p *parser) parseAnd() (cql2.Node, error) {
 		if op, ok := left.(*cql2.Op); ok && op.Op == cql2.OpAnd {
 			op.Args = append(op.Args, right)
 		} else {
-			left = &cql2.Op{Op: cql2.OpAnd, Args: []cql2.Node{left, right}}
+			n := &cql2.Op{Op: cql2.OpAnd, Args: []cql2.Node{left, right}}
+			p.recordPos(n, opTok.pos)
+			left = n
 		}
 	}
 }
@@ -492,12 +612,21 @@ func (p *parser) parseNot() (cql2.Node, error) {
 		return nil, err
 	}
 	if keywordEqual(t, "NOT") {
-		_, _ = p.consumeToken()
-		inner, err := p.parsePredicate()
+		notTok, _ := p.consumeToken()
+		// Recurse into parseNot, not parsePredicate, so consecutive
+		// NOTs (e.g. NOT NOT x) are folded correctly. Each NOT adds a
+		// frame, so bump the depth counter to protect against deep chains.
+		if err := p.enterDepth(t.pos); err != nil {
+			return nil, err
+		}
+		inner, err := p.parseNot()
+		p.leaveDepth()
 		if err != nil {
 			return nil, err
 		}
-		return &cql2.Op{Op: cql2.OpNot, Args: []cql2.Node{inner}}, nil
+		n := &cql2.Op{Op: cql2.OpNot, Args: []cql2.Node{inner}}
+		p.recordPos(n, notTok.pos)
+		return n, nil
 	}
 	return p.parsePredicate()
 }
@@ -511,49 +640,29 @@ func (p *parser) parsePredicate() (cql2.Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	cmp := func(op cql2.Operator) (cql2.Node, error) {
+		opTok, _ := p.consumeToken()
+		rhs, err := p.parseAdditive()
+		if err != nil {
+			return nil, err
+		}
+		n := &cql2.Op{Op: op, Args: []cql2.Node{lhs, rhs}}
+		p.recordPos(n, opTok.pos)
+		return n, nil
+	}
 	switch {
 	case t.kind == tokEq:
-		_, _ = p.consumeToken()
-		rhs, err := p.parseAdditive()
-		if err != nil {
-			return nil, err
-		}
-		return &cql2.Op{Op: cql2.OpEq, Args: []cql2.Node{lhs, rhs}}, nil
+		return cmp(cql2.OpEq)
 	case t.kind == tokNeq:
-		_, _ = p.consumeToken()
-		rhs, err := p.parseAdditive()
-		if err != nil {
-			return nil, err
-		}
-		return &cql2.Op{Op: cql2.OpNeq, Args: []cql2.Node{lhs, rhs}}, nil
+		return cmp(cql2.OpNeq)
 	case t.kind == tokLt:
-		_, _ = p.consumeToken()
-		rhs, err := p.parseAdditive()
-		if err != nil {
-			return nil, err
-		}
-		return &cql2.Op{Op: cql2.OpLt, Args: []cql2.Node{lhs, rhs}}, nil
+		return cmp(cql2.OpLt)
 	case t.kind == tokLte:
-		_, _ = p.consumeToken()
-		rhs, err := p.parseAdditive()
-		if err != nil {
-			return nil, err
-		}
-		return &cql2.Op{Op: cql2.OpLte, Args: []cql2.Node{lhs, rhs}}, nil
+		return cmp(cql2.OpLte)
 	case t.kind == tokGt:
-		_, _ = p.consumeToken()
-		rhs, err := p.parseAdditive()
-		if err != nil {
-			return nil, err
-		}
-		return &cql2.Op{Op: cql2.OpGt, Args: []cql2.Node{lhs, rhs}}, nil
+		return cmp(cql2.OpGt)
 	case t.kind == tokGte:
-		_, _ = p.consumeToken()
-		rhs, err := p.parseAdditive()
-		if err != nil {
-			return nil, err
-		}
-		return &cql2.Op{Op: cql2.OpGte, Args: []cql2.Node{lhs, rhs}}, nil
+		return cmp(cql2.OpGte)
 	case keywordEqual(t, "BETWEEN"):
 		return p.parseBetweenTail(lhs, false)
 	case keywordEqual(t, "IN"):
@@ -609,11 +718,14 @@ func (p *parser) parseBetweenTail(lhs cql2.Node, negate bool) (cql2.Node, error)
 	if err != nil {
 		return nil, err
 	}
-	node := cql2.Node(&cql2.Op{Op: cql2.OpBetween, Args: []cql2.Node{lhs, lo, hi}})
+	inner := &cql2.Op{Op: cql2.OpBetween, Args: []cql2.Node{lhs, lo, hi}}
+	p.recordPos(inner, t.pos)
 	if negate {
-		node = &cql2.Op{Op: cql2.OpNot, Args: []cql2.Node{node}}
+		outer := &cql2.Op{Op: cql2.OpNot, Args: []cql2.Node{inner}}
+		p.recordPos(outer, t.pos)
+		return outer, nil
 	}
-	return node, nil
+	return inner, nil
 }
 
 func (p *parser) parseInTail(lhs cql2.Node, negate bool) (cql2.Node, error) {
@@ -663,11 +775,16 @@ func (p *parser) parseInTail(lhs cql2.Node, negate bool) (cql2.Node, error) {
 	if rp.kind != tokRParen {
 		return nil, p.syntaxErrorAt(rp.pos, "expected ')' to close IN list", rp.text)
 	}
-	node := cql2.Node(&cql2.Op{Op: cql2.OpIn, Args: []cql2.Node{lhs, &cql2.ArrayLit{Elements: elems}}})
+	arr := &cql2.ArrayLit{Elements: elems}
+	p.recordPos(arr, lp.pos)
+	inner := &cql2.Op{Op: cql2.OpIn, Args: []cql2.Node{lhs, arr}}
+	p.recordPos(inner, t.pos)
 	if negate {
-		node = &cql2.Op{Op: cql2.OpNot, Args: []cql2.Node{node}}
+		outer := &cql2.Op{Op: cql2.OpNot, Args: []cql2.Node{inner}}
+		p.recordPos(outer, t.pos)
+		return outer, nil
 	}
-	return node, nil
+	return inner, nil
 }
 
 func (p *parser) parseIsNullTail(lhs cql2.Node) (cql2.Node, error) {
@@ -694,11 +811,14 @@ func (p *parser) parseIsNullTail(lhs cql2.Node) (cql2.Node, error) {
 	if !keywordEqual(t3, "NULL") {
 		return nil, p.syntaxErrorAt(t3.pos, "expected NULL", t3.text)
 	}
-	node := cql2.Node(&cql2.Op{Op: cql2.OpIsNull, Args: []cql2.Node{lhs}})
+	inner := &cql2.Op{Op: cql2.OpIsNull, Args: []cql2.Node{lhs}}
+	p.recordPos(inner, t.pos)
 	if negate {
-		node = &cql2.Op{Op: cql2.OpNot, Args: []cql2.Node{node}}
+		outer := &cql2.Op{Op: cql2.OpNot, Args: []cql2.Node{inner}}
+		p.recordPos(outer, t.pos)
+		return outer, nil
 	}
-	return node, nil
+	return inner, nil
 }
 
 func (p *parser) parseLikeTail(lhs cql2.Node, negate bool) (cql2.Node, error) {
@@ -713,11 +833,14 @@ func (p *parser) parseLikeTail(lhs cql2.Node, negate bool) (cql2.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	node := cql2.Node(&cql2.Op{Op: cql2.OpLike, Args: []cql2.Node{lhs, rhs}})
+	inner := &cql2.Op{Op: cql2.OpLike, Args: []cql2.Node{lhs, rhs}}
+	p.recordPos(inner, t.pos)
 	if negate {
-		node = &cql2.Op{Op: cql2.OpNot, Args: []cql2.Node{node}}
+		outer := &cql2.Op{Op: cql2.OpNot, Args: []cql2.Node{inner}}
+		p.recordPos(outer, t.pos)
+		return outer, nil
 	}
-	return node, nil
+	return inner, nil
 }
 
 // Arithmetic precedence: + - (additive) < * / % div (multiplicative) < ^ (power, right-assoc) < unary - < primary.
@@ -740,12 +863,14 @@ func (p *parser) parseAdditive() (cql2.Node, error) {
 		default:
 			return left, nil
 		}
-		_, _ = p.consumeToken()
+		opTok, _ := p.consumeToken()
 		right, err := p.parseMultiplicative()
 		if err != nil {
 			return nil, err
 		}
-		left = &cql2.Op{Op: op, Args: []cql2.Node{left, right}}
+		n := &cql2.Op{Op: op, Args: []cql2.Node{left, right}}
+		p.recordPos(n, opTok.pos)
+		left = n
 	}
 }
 
@@ -772,12 +897,14 @@ func (p *parser) parseMultiplicative() (cql2.Node, error) {
 		default:
 			return left, nil
 		}
-		_, _ = p.consumeToken()
+		opTok, _ := p.consumeToken()
 		right, err := p.parsePower()
 		if err != nil {
 			return nil, err
 		}
-		left = &cql2.Op{Op: op, Args: []cql2.Node{left, right}}
+		n := &cql2.Op{Op: op, Args: []cql2.Node{left, right}}
+		p.recordPos(n, opTok.pos)
+		left = n
 	}
 }
 
@@ -793,13 +920,19 @@ func (p *parser) parsePower() (cql2.Node, error) {
 	if t.kind != tokCaret {
 		return left, nil
 	}
-	_, _ = p.consumeToken()
-	// Right-assoc.
+	opTok, _ := p.consumeToken()
+	// Right-associative; each `^` adds a stack frame.
+	if err := p.enterDepth(t.pos); err != nil {
+		return nil, err
+	}
 	right, err := p.parsePower()
+	p.leaveDepth()
 	if err != nil {
 		return nil, err
 	}
-	return &cql2.Op{Op: cql2.OpPow, Args: []cql2.Node{left, right}}, nil
+	n := &cql2.Op{Op: cql2.OpPow, Args: []cql2.Node{left, right}}
+	p.recordPos(n, opTok.pos)
+	return n, nil
 }
 
 func (p *parser) parseUnary() (cql2.Node, error) {
@@ -809,7 +942,11 @@ func (p *parser) parseUnary() (cql2.Node, error) {
 	}
 	if t.kind == tokMinus {
 		_, _ = p.consumeToken()
+		if err := p.enterDepth(t.pos); err != nil {
+			return nil, err
+		}
 		inner, err := p.parseUnary()
+		p.leaveDepth()
 		if err != nil {
 			return nil, err
 		}
@@ -832,7 +969,12 @@ func (p *parser) parseUnary() (cql2.Node, error) {
 	}
 	if t.kind == tokPlus {
 		_, _ = p.consumeToken()
-		return p.parseUnary()
+		if err := p.enterDepth(t.pos); err != nil {
+			return nil, err
+		}
+		n, err := p.parseUnary()
+		p.leaveDepth()
+		return n, err
 	}
 	return p.parsePrimary()
 }
@@ -881,7 +1023,9 @@ func (p *parser) parsePrimary() (cql2.Node, error) {
 				}
 				if peek.kind == tokRParen {
 					_, _ = p.consumeToken()
-					return &cql2.ArrayLit{Elements: elements}, nil
+					arr := &cql2.ArrayLit{Elements: elements}
+					p.recordPos(arr, t.pos)
+					return arr, nil
 				}
 				if peek.kind != tokComma {
 					return nil, p.syntaxErrorAt(peek.pos, "expected ',' or ')' in array literal", peek.text)
@@ -948,7 +1092,12 @@ func (p *parser) parseIdentPrimary(t token) (cql2.Node, error) {
 	}
 
 	if la.kind != tokLParen {
-		// Bare property reference.
+		// Bare property reference. Reserved keywords (AND, OR, NOT, …,
+		// geometry types, typed-literal constructors) cannot appear here;
+		// they must be quoted to be used as property names.
+		if reservedKeywords[lower] {
+			return nil, p.syntaxErrorAt(t.pos, fmt.Sprintf("reserved keyword %q cannot be used as a bare property reference (quote it as %q)", t.text, "\""+t.text+"\""), t.text)
+		}
 		return &cql2.PropertyRef{Name: t.text}, nil
 	}
 
@@ -998,11 +1147,20 @@ func (p *parser) parseDateConstructor(at cql2.Pos) (cql2.Node, error) {
 	if err := p.expectKind(tokRParen, ")"); err != nil {
 		return nil, err
 	}
-	tm, err := time.ParseInLocation("2006-01-02", s, time.UTC)
+	tm, err := time.ParseInLocation("2006-01-02", s, dateLocation(p.cfg))
 	if err != nil {
 		return nil, p.syntaxErrorAt(at, fmt.Sprintf("malformed DATE literal: %v", err), s)
 	}
 	return &cql2.DateLit{Value: tm}, nil
+}
+
+// dateLocation returns the timezone used for bare DATE literals,
+// honouring WithDateTimezone and falling back to UTC.
+func dateLocation(cfg *cql2.Config) *time.Location {
+	if cfg != nil && cfg.DateTimezone != nil {
+		return cfg.DateTimezone
+	}
+	return time.UTC
 }
 
 func (p *parser) parseIntervalConstructor(at cql2.Pos) (cql2.Node, error) {
@@ -1026,9 +1184,10 @@ func (p *parser) parseIntervalConstructor(at cql2.Pos) (cql2.Node, error) {
 	return &cql2.IntervalLit{Start: startEP, End: endEP}, nil
 }
 
-// parseIntervalArg accepts either a single-quoted string literal (parsed via
-// parseIntervalEndpoint into a TimestampLit/DateLit/Unbounded) or an unquoted
-// identifier / quoted-identifier (built into a *PropertyRef).
+// parseIntervalArg accepts a single-quoted string literal (parsed via
+// parseIntervalEndpoint into a TimestampLit/DateLit/Unbounded), an unquoted
+// identifier / quoted-identifier (built into a *PropertyRef), or a function
+// call (e.g. INTERVAL(now(), ..)).
 func (p *parser) parseIntervalArg(at cql2.Pos, which string) (cql2.IntervalEndpoint, error) {
 	t, err := p.peekToken()
 	if err != nil {
@@ -1037,13 +1196,29 @@ func (p *parser) parseIntervalArg(at cql2.Pos, which string) (cql2.IntervalEndpo
 	switch t.kind {
 	case tokString:
 		_, _ = p.consumeToken()
-		ep, err := parseIntervalEndpoint(t.text)
+		ep, err := parseIntervalEndpoint(t.text, dateLocation(p.cfg))
 		if err != nil {
 			return nil, p.syntaxErrorAt(at, fmt.Sprintf("malformed INTERVAL %s: %v", which, err), t.text)
+		}
+		if n, ok := ep.(cql2.Node); ok {
+			p.recordPos(n, t.pos)
 		}
 		return ep, nil
 	case tokIdent:
 		_, _ = p.consumeToken()
+		// Function call: identifier immediately followed by '('.
+		if next, _ := p.peekToken(); next.kind == tokLParen {
+			node, err := p.parseFunctionCall(t)
+			if err != nil {
+				return nil, err
+			}
+			fn, ok := node.(*cql2.FunctionCall)
+			if !ok {
+				return nil, p.syntaxErrorAt(t.pos,
+					"only user-defined functions are valid as INTERVAL endpoints", t.text)
+			}
+			return fn, nil
+		}
 		pr := &cql2.PropertyRef{Name: t.text}
 		p.recordPos(pr, t.pos)
 		return pr, nil
@@ -1053,25 +1228,27 @@ func (p *parser) parseIntervalArg(at cql2.Pos, which string) (cql2.IntervalEndpo
 		p.recordPos(pr, t.pos)
 		return pr, nil
 	default:
-		return nil, p.syntaxErrorAt(t.pos, "expected string literal or property reference in INTERVAL", t.text)
+		return nil, p.syntaxErrorAt(t.pos, "expected string literal, property reference, or function call in INTERVAL", t.text)
 	}
 }
 
-func parseIntervalEndpoint(s string) (cql2.IntervalEndpoint, error) {
+func parseIntervalEndpoint(s string, dateLoc *time.Location) (cql2.IntervalEndpoint, error) {
 	if s == ".." {
 		return &cql2.Unbounded{}, nil
 	}
 	if tm, err := time.Parse(time.RFC3339Nano, s); err == nil {
 		return &cql2.TimestampLit{Value: tm}, nil
 	}
-	if tm, err := time.ParseInLocation("2006-01-02", s, time.UTC); err == nil {
+	if dateLoc == nil {
+		dateLoc = time.UTC
+	}
+	if tm, err := time.ParseInLocation("2006-01-02", s, dateLoc); err == nil {
 		return &cql2.DateLit{Value: tm}, nil
 	}
 	return nil, fmt.Errorf("not a recognised RFC3339 timestamp or date: %q", s)
 }
 
 func (p *parser) parseBBoxConstructor(at cql2.Pos) (cql2.Node, error) {
-	_ = at
 	if err := p.expectKind(tokLParen, "("); err != nil {
 		return nil, err
 	}
@@ -1119,7 +1296,7 @@ func (p *parser) parseBBoxConstructor(at cql2.Pos) (cql2.Node, error) {
 		return nil, err
 	}
 	if len(coords) != 4 && len(coords) != 6 {
-		return nil, p.syntaxErrorAt(p.curPos(), fmt.Sprintf("BBOX requires 4 or 6 coordinates, got %d", len(coords)), "")
+		return nil, p.syntaxErrorAt(at, fmt.Sprintf("BBOX requires 4 or 6 coordinates, got %d", len(coords)), "")
 	}
 	return &cql2.BBoxLit{Coords: coords}, nil
 }
@@ -1243,8 +1420,16 @@ func (p *parser) parseFunctionCall(name token) (cql2.Node, error) {
 		return nil, err
 	}
 	// Desugar known operator-keyword functions.
-	if op, ok := operatorFunctionNames[strings.ToLower(name.text)]; ok {
+	lower := strings.ToLower(name.text)
+	if op, ok := operatorFunctionNames[lower]; ok {
 		return &cql2.Op{Op: op, Args: args}, nil
+	}
+	// Reserved keywords (AND, OR, NOT, BETWEEN, IN, …) cannot be used
+	// as user-defined function names. Typed-literal constructors and
+	// geometry keywords are routed before parseFunctionCall, so they
+	// never reach this check in their proper positions.
+	if reservedKeywords[lower] {
+		return nil, p.syntaxErrorAt(name.pos, fmt.Sprintf("reserved keyword %q cannot be used as a function name", name.text), name.text)
 	}
 	return &cql2.FunctionCall{Name: name.text, Args: args}, nil
 }
@@ -1270,4 +1455,3 @@ func (p *parser) expectStringLiteral() (string, error) {
 	}
 	return t.text, nil
 }
-

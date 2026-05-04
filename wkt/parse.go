@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	cql2 "github.com/example/go-cql2"
+	cql2 "github.com/exergy-dev/go-cql2"
 )
 
 // Parse parses a WKT string into a cql2.Geometry.
@@ -274,6 +274,10 @@ func validateRing(r []cql2.Coord, p *parser) error {
 }
 
 func (p *parser) parseMultiPointTail() (*cql2.MultiPoint, error) {
+	p.skipWS()
+	if p.tryEmpty() {
+		return &cql2.MultiPoint{}, nil
+	}
 	if err := p.expectByte('('); err != nil {
 		return nil, err
 	}
@@ -321,7 +325,11 @@ func (p *parser) parseMultiPointTail() (*cql2.MultiPoint, error) {
 	return &cql2.MultiPoint{Points: pts}, nil
 }
 
-func (p *parser) parseMultiLineStringTail() (*cql2.MultiLineStr, error) {
+func (p *parser) parseMultiLineStringTail() (*cql2.MultiLineString, error) {
+	p.skipWS()
+	if p.tryEmpty() {
+		return &cql2.MultiLineString{}, nil
+	}
 	if err := p.expectByte('('); err != nil {
 		return nil, err
 	}
@@ -346,10 +354,14 @@ func (p *parser) parseMultiLineStringTail() (*cql2.MultiLineStr, error) {
 	if err := p.expectByte(')'); err != nil {
 		return nil, err
 	}
-	return &cql2.MultiLineStr{Lines: lines}, nil
+	return &cql2.MultiLineString{Lines: lines}, nil
 }
 
 func (p *parser) parseMultiPolygonTail() (*cql2.MultiPolygon, error) {
+	p.skipWS()
+	if p.tryEmpty() {
+		return &cql2.MultiPolygon{}, nil
+	}
 	if err := p.expectByte('('); err != nil {
 		return nil, err
 	}
@@ -382,7 +394,11 @@ func (p *parser) parseMultiPolygonTail() (*cql2.MultiPolygon, error) {
 	return &cql2.MultiPolygon{Polys: polys}, nil
 }
 
-func (p *parser) parseGeometryCollectionTail() (*cql2.GeometryColl, error) {
+func (p *parser) parseGeometryCollectionTail() (*cql2.GeometryCollection, error) {
+	p.skipWS()
+	if p.tryEmpty() {
+		return &cql2.GeometryCollection{}, nil
+	}
 	if err := p.expectByte('('); err != nil {
 		return nil, err
 	}
@@ -390,7 +406,7 @@ func (p *parser) parseGeometryCollectionTail() (*cql2.GeometryColl, error) {
 	p.skipWS()
 	if p.peek() == ')' {
 		p.advance(1)
-		return &cql2.GeometryColl{Geoms: geoms}, nil
+		return &cql2.GeometryCollection{Geoms: geoms}, nil
 	}
 	for {
 		p.skipWS()
@@ -409,7 +425,7 @@ func (p *parser) parseGeometryCollectionTail() (*cql2.GeometryColl, error) {
 	if err := p.expectByte(')'); err != nil {
 		return nil, err
 	}
-	return &cql2.GeometryColl{Geoms: geoms}, nil
+	return &cql2.GeometryCollection{Geoms: geoms}, nil
 }
 
 // parseCoordList parses "(c, c, ...)".
@@ -566,4 +582,3 @@ func (p *parser) parseNumber() (float64, error) {
 	}
 	return f, nil
 }
-

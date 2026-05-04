@@ -6,13 +6,55 @@ on:
   pull_request:
 
 jobs:
-  build:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go: ['1.23', '1.24', '1.25']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+  race:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test ./...
+          go-version: '1.25'
+      - run: go test -race ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62.0
+
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { pkg: ./text, name: FuzzParse }
+          - { pkg: ./text, name: FuzzRoundTrip }
+          - { pkg: ./json, name: FuzzParse }
+          - { pkg: ./json, name: FuzzRoundTrip }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: go test -run=^$ -fuzz=^${{ matrix.target.name }}$ -fuzztime=60s ${{ matrix.target.pkg }}

@@ -15,7 +15,6 @@ type TextStyle uint8
 
 const (
 	StyleNormal TextStyle = iota
-	StyleMinimal
 	StyleVerbose
 )
 
@@ -29,11 +28,18 @@ type Config struct {
 	Positions       *PositionMap // non-nil if WithPositions was supplied
 	positionsOut    **PositionMap
 	CustomOperators map[Operator]bool
-	CRS             string
 	DateTimezone    *time.Location
-	CaseIAsFunction bool
 	TextStyle       TextStyle
+	// MaxDepth caps expression nesting in both Text and JSON parsers.
+	// A value of 0 means use DefaultMaxDepth; a negative value disables
+	// the limit (not recommended for untrusted input).
+	MaxDepth int
 }
+
+// DefaultMaxDepth is the default upper bound on expression nesting depth.
+// Adversarial inputs can otherwise drive parser recursion until the Go
+// runtime grows the goroutine stack to its hard limit.
+const DefaultMaxDepth = 256
 
 // DefaultConfig returns the default resolved config.
 func DefaultConfig() *Config {
@@ -41,6 +47,7 @@ func DefaultConfig() *Config {
 		Conformance:  ConfAll,
 		DateTimezone: time.UTC,
 		TextStyle:    StyleNormal,
+		MaxDepth:     DefaultMaxDepth,
 	}
 }
 
@@ -96,23 +103,25 @@ func WithCustomOperators(ops ...Operator) Option {
 	}
 }
 
-// WithCRS sets the active spatial reference system identifier.
-func WithCRS(crs string) Option {
-	return func(cfg *Config) { cfg.CRS = crs }
-}
-
 // WithDateTimezone sets the timezone used to interpret bare DATE literals.
+// Affects both CQL2-Text DATE('YYYY-MM-DD') and CQL2-JSON {"date":"..."} parsing,
+// including DATE-shaped INTERVAL endpoints. The default is time.UTC.
 func WithDateTimezone(loc *time.Location) Option {
-	return func(cfg *Config) { cfg.DateTimezone = loc }
-}
-
-// WithCaseInsensitiveAsFunction emits CASEI/ACCENTI as function calls
-// instead of as wrapped operators when encoding.
-func WithCaseInsensitiveAsFunction() Option {
-	return func(cfg *Config) { cfg.CaseIAsFunction = true }
+	return func(cfg *Config) {
+		if loc != nil {
+			cfg.DateTimezone = loc
+		}
+	}
 }
 
 // WithTextStyle sets the text-encoding style.
 func WithTextStyle(s TextStyle) Option {
 	return func(cfg *Config) { cfg.TextStyle = s }
+}
+
+// WithMaxDepth sets the maximum expression nesting depth accepted by Parse.
+// Pass 0 to fall back to DefaultMaxDepth, or a negative value to disable
+// the limit (only safe for trusted input).
+func WithMaxDepth(d int) Option {
+	return func(cfg *Config) { cfg.MaxDepth = d }
 }

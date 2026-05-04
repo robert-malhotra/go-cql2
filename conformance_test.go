@@ -21,7 +21,7 @@ package cql2_test
 
 import (
 	"bytes"
-	stdjson "encoding/json"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -29,8 +29,8 @@ import (
 	"strings"
 	"testing"
 
-	cql2 "github.com/example/go-cql2"
-	_ "github.com/example/go-cql2/codecs"
+	cql2 "github.com/exergy-dev/go-cql2"
+	_ "github.com/exergy-dev/go-cql2/codecs"
 )
 
 const ogcCorpusDir = "testdata/ogc"
@@ -41,13 +41,9 @@ const ogcCorpusDir = "testdata/ogc"
 // canonicalized byte comparison. See testdata/ogc/diffs.md for the rationale
 // per example.
 var relaxedJSONByteEquality = map[string]string{
-	"24_t_finishedby_interval_props": "operator name canonicalized: t_finishedBy → t_finishedby (CQL2 ops are case-insensitive; AST stores the canonical lowercased form for these temporal ops)",
-	"25_t_metby_mixed_interval":      "operator name canonicalized: t_metBy → t_metby",
-	"26_t_overlappedby":              "operator name canonicalized: t_overlappedBy → t_overlappedby",
-	"27_t_startedby":                 "operator name canonicalized: t_startedBy → t_startedby",
-	"31_func_avg_inline_op":          "inline-op form normalized to function-form on encode: {\"op\":\"avg\",\"args\":...} → {\"function\":{\"name\":\"avg\",\"args\":...}}. Unknown op names parse to *FunctionCall, which always emits the function-form on encode.",
-	"32_func_avg_inline_compare":     "inline-op form normalized to function-form on encode (nested case)",
-	"33_func_buffer_inline_op":       "inline-op form normalized to function-form on encode",
+	"31_func_avg_inline_op":      "inline-op form normalized to function-form on encode: {\"op\":\"avg\",\"args\":...} → {\"function\":{\"name\":\"avg\",\"args\":...}}. Unknown op names parse to *FunctionCall, which always emits the function-form on encode.",
+	"32_func_avg_inline_compare": "inline-op form normalized to function-form on encode (nested case)",
+	"33_func_buffer_inline_op":   "inline-op form normalized to function-form on encode",
 }
 
 // canonicalizeJSON parses b as JSON and returns a normalized representation
@@ -59,12 +55,12 @@ func canonicalizeJSON(t *testing.T, name, label string, b []byte) interface{} {
 	t.Helper()
 	// Compact first so we surface obviously-malformed JSON early.
 	var compact bytes.Buffer
-	if err := stdjson.Compact(&compact, b); err != nil {
+	if err := json.Compact(&compact, b); err != nil {
 		t.Errorf("%s: %s: json.Compact: %v", name, label, err)
 		return nil
 	}
 	var v interface{}
-	if err := stdjson.Unmarshal(compact.Bytes(), &v); err != nil {
+	if err := json.Unmarshal(compact.Bytes(), &v); err != nil {
 		t.Errorf("%s: %s: json.Unmarshal: %v", name, label, err)
 		return nil
 	}

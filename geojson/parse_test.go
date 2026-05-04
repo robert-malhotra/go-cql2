@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	cql2 "github.com/example/go-cql2"
-	"github.com/example/go-cql2/geojson"
+	cql2 "github.com/exergy-dev/go-cql2"
+	"github.com/exergy-dev/go-cql2/geojson"
 )
 
 func TestParsePoint2D(t *testing.T) {
@@ -103,7 +103,7 @@ func TestParseMultiLineString(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := &cql2.MultiLineStr{Lines: []cql2.LineString{
+	want := &cql2.MultiLineString{Lines: []cql2.LineString{
 		{Coords: []cql2.Coord{{X: 1, Y: 2}, {X: 3, Y: 4}}},
 		{Coords: []cql2.Coord{{X: 5, Y: 6}, {X: 7, Y: 8}}},
 	}}
@@ -135,9 +135,9 @@ func TestParseGeometryCollectionMixed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gc, ok := g.(*cql2.GeometryColl)
+	gc, ok := g.(*cql2.GeometryCollection)
 	if !ok {
-		t.Fatalf("want *GeometryColl, got %T", g)
+		t.Fatalf("want *GeometryCollection, got %T", g)
 	}
 	if len(gc.Geoms) != 3 {
 		t.Fatalf("want 3 geometries, got %d", len(gc.Geoms))

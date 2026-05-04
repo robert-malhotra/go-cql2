@@ -193,6 +193,8 @@ func endpointAsNode(e IntervalEndpoint) Node {
 		return v
 	case *PropertyRef:
 		return v
+	case *FunctionCall:
+		return v
 	}
 	return nil
 }

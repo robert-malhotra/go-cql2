@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	cql2 "github.com/example/go-cql2"
-	cqljson "github.com/example/go-cql2/json"
+	cql2 "github.com/exergy-dev/go-cql2"
+	cqljson "github.com/exergy-dev/go-cql2/json"
 )
 
 func TestEncodeBool(t *testing.T) {
@@ -149,6 +149,39 @@ func TestEncodeGeometryDelegation(t *testing.T) {
 	}
 	if string(b) != `{"type":"Point","coordinates":[1,2]}` {
 		t.Fatalf("got %s", b)
+	}
+}
+
+// TestEncodeDateNormalizesToUTC pins that a DateLit carrying a non-UTC
+// time.Time encodes to the UTC calendar-date string in JSON, matching the
+// text encoder. Without UTC normalization the JSON and text encoders
+// emitted different dates for the same DateLit.
+func TestEncodeDateNormalizesToUTC(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("tzdata unavailable: %v", err)
+	}
+	// 2024-01-01 22:00 New York is 2024-01-02 03:00 UTC.
+	d := &cql2.DateLit{Value: time.Date(2024, 1, 1, 22, 0, 0, 0, loc)}
+
+	got, err := cqljson.Encode(d)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	want := `{"date":"2024-01-02"}`
+	if string(got) != want {
+		t.Fatalf("Encode: got %s want %s", got, want)
+	}
+
+	// Same DateLit inside an INTERVAL endpoint must also normalize.
+	iv := &cql2.IntervalLit{Start: d, End: &cql2.Unbounded{}}
+	gotIv, err := cqljson.Encode(iv)
+	if err != nil {
+		t.Fatalf("Encode interval: %v", err)
+	}
+	wantIv := `{"interval":["2024-01-02",".."]}`
+	if string(gotIv) != wantIv {
+		t.Fatalf("Encode interval: got %s want %s", gotIv, wantIv)
 	}
 }
 

@@ -27,8 +27,8 @@ type PositionMap struct {
 	m map[Node]Pos
 }
 
-// Of returns the recorded position for n, if any.
-func (m *PositionMap) Of(n Node) (Pos, bool) {
+// Get returns the recorded position for n, if any.
+func (m *PositionMap) Get(n Node) (Pos, bool) {
 	if m == nil || m.m == nil {
 		return Pos{}, false
 	}

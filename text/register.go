@@ -1,7 +1,7 @@
 package text
 
 import (
-	cql2 "github.com/example/go-cql2"
+	cql2 "github.com/exergy-dev/go-cql2"
 )
 
 // init registers the CQL2-Text codec with the root cql2 package so

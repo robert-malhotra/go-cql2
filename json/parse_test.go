@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	cql2 "github.com/example/go-cql2"
-	cqljson "github.com/example/go-cql2/json"
+	cql2 "github.com/exergy-dev/go-cql2"
+	cqljson "github.com/exergy-dev/go-cql2/json"
 )
 
 func TestParseBool(t *testing.T) {

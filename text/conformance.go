@@ -1,7 +1,7 @@
 package text
 
 import (
-	cql2 "github.com/example/go-cql2"
+	cql2 "github.com/exergy-dev/go-cql2"
 )
 
 // checkConformance walks the AST and returns the first *cql2.ConformanceError
@@ -25,16 +25,27 @@ func walkCheck(n cql2.Node, cfg *cql2.Config) error {
 			if req != 0 && !cfg.Conformance.Has(req) {
 				return mkConfErr(req, cfg, cql2.HumanFeatureName(x.Op), x)
 			}
-			// Property-property comparison: a comparison op where both
-			// args are *cql2.PropertyRef.
-			if isComparison(x.Op) && len(x.Args) == 2 {
-				_, lp := x.Args[0].(*cql2.PropertyRef)
-				_, rp := x.Args[1].(*cql2.PropertyRef)
-				if lp && rp {
-					if !cfg.Conformance.Has(cql2.ConfPropertyProperty) {
-						return mkConfErr(cql2.ConfPropertyProperty, cfg,
-							cql2.HumanFeatureName(cql2.FeaturePropertyProperty), x)
-					}
+			// S_INTERSECTS with a non-Point/non-BBox literal requires
+			// basic-spatial-functions-plus on top of basic-spatial-functions.
+			// ConfSpatial implies the plus class.
+			if cql2.RequiresBasicSpatialPlus(x.Op, x.Args) &&
+				!cfg.Conformance.Has(cql2.ConfBasicSpatialPlus) &&
+				!cfg.Conformance.Has(cql2.ConfSpatial) {
+				return mkConfErr(cql2.ConfBasicSpatialPlus, cfg,
+					"S_INTERSECTS with non-Point geometry literal", x)
+			}
+			// Property-property: any comparison OR arithmetic op whose two
+			// args are both *cql2.PropertyRef. The spec's property-property
+			// class also covers nested cases like `a + 1 > b`; this conservative
+			// check catches the direct cases that the parser generates today.
+			// Property-property: predicates whose operand shape deviates
+			// from Basic CQL2's "property on left, literal on right" rule.
+			// Arithmetic LHS/RHS is gated by ConfArithmetic, not here.
+			if cql2.RequiresPropertyPropertyShape(x.Op, x.Args) ||
+				(arithmeticBothProps(x.Op, x.Args)) {
+				if !cfg.Conformance.Has(cql2.ConfPropertyProperty) {
+					return mkConfErr(cql2.ConfPropertyProperty, cfg,
+						cql2.HumanFeatureName(cql2.FeaturePropertyProperty), x)
 				}
 			}
 		}
@@ -63,18 +74,29 @@ func walkCheck(n cql2.Node, cfg *cql2.Config) error {
 	return nil
 }
 
-func isComparison(op cql2.Operator) bool {
+// arithmeticBothProps catches the legacy property-property case where an
+// arithmetic op is applied to two property references (e.g. `a + b`). The
+// arithmetic op itself is gated by ConfArithmetic; the prop-prop nature of
+// its operands is gated by ConfPropertyProperty.
+func arithmeticBothProps(op cql2.Operator, args []cql2.Node) bool {
 	switch op {
-	case cql2.OpEq, cql2.OpNeq, cql2.OpLt, cql2.OpLte, cql2.OpGt, cql2.OpGte:
-		return true
+	case cql2.OpAdd, cql2.OpSub, cql2.OpMul, cql2.OpDiv,
+		cql2.OpMod, cql2.OpPow, cql2.OpIDiv:
+	default:
+		return false
 	}
-	return false
+	if len(args) != 2 {
+		return false
+	}
+	_, lp := args[0].(*cql2.PropertyRef)
+	_, rp := args[1].(*cql2.PropertyRef)
+	return lp && rp
 }
 
 func mkConfErr(req cql2.Conformance, cfg *cql2.Config, feature string, n cql2.Node) error {
 	at := cql2.Pos{}
 	if cfg != nil && cfg.Positions != nil {
-		if p, ok := cfg.Positions.Of(n); ok {
+		if p, ok := cfg.Positions.Get(n); ok {
 			at = p
 		}
 	}

@@ -120,3 +120,4 @@ func (*TimestampLit) isIntervalEndpoint() {}
 func (*DateLit) isIntervalEndpoint()      {}
 func (*Unbounded) isIntervalEndpoint()    {}
 func (*PropertyRef) isIntervalEndpoint()  {}
+func (*FunctionCall) isIntervalEndpoint() {}

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	cql2 "github.com/example/go-cql2"
+	cql2 "github.com/exergy-dev/go-cql2"
 )
 
 func mustParse(t *testing.T, src string) cql2.Node {

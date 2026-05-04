@@ -5,14 +5,13 @@ import (
 	"strconv"
 	"strings"
 
-	cql2 "github.com/example/go-cql2"
-	"github.com/example/go-cql2/wkt"
+	cql2 "github.com/exergy-dev/go-cql2"
+	"github.com/exergy-dev/go-cql2/wkt"
 )
 
 // Encode emits an AST as a CQL2 Text string.
 //
-// Recognized options: WithTextStyle (StyleNormal, StyleVerbose),
-// WithCaseInsensitiveAsFunction.
+// Recognized options: WithTextStyle (StyleNormal, StyleVerbose).
 func Encode(n cql2.Node, opts ...cql2.Option) (string, error) {
 	cfg := cql2.ResolveOptions(opts...)
 	if n == nil {
@@ -99,9 +98,13 @@ func (e *encoder) writeNode(b *strings.Builder, n cql2.Node, parentPrec int) err
 		return nil
 	case *cql2.IntervalLit:
 		b.WriteString("INTERVAL(")
-		writeIntervalEndpoint(b, x.Start)
+		if err := e.writeIntervalEndpoint(b, x.Start); err != nil {
+			return err
+		}
 		b.WriteByte(',')
-		writeIntervalEndpoint(b, x.End)
+		if err := e.writeIntervalEndpoint(b, x.End); err != nil {
+			return err
+		}
 		b.WriteByte(')')
 		return nil
 	case *cql2.GeomLit:
@@ -391,31 +394,49 @@ func writeStringLit(b *strings.Builder, s string) {
 	b.WriteByte('\'')
 	for i := 0; i < len(s); i++ {
 		ch := s[i]
-		if ch == '\'' {
-			b.WriteByte('\'')
-			b.WriteByte('\'')
-			continue
+		switch ch {
+		case '\'':
+			b.WriteString("''")
+		case '\\':
+			b.WriteString(`\\`)
+		case '\a':
+			b.WriteString(`\a`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\v':
+			b.WriteString(`\v`)
+		case '\f':
+			b.WriteString(`\f`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			b.WriteByte(ch)
 		}
-		b.WriteByte(ch)
 	}
 	b.WriteByte('\'')
 }
 
-// isBareIdent reports whether name can be emitted as a bare identifier.
+// isBareIdent reports whether name can be emitted as a bare identifier
+// (per Annex B's propertyName grammar). Mirrors text/parse.go's
+// isIdentStartRune / isIdentContRune.
 func isBareIdent(name string) bool {
 	if name == "" {
 		return false
 	}
-	for i := 0; i < len(name); i++ {
-		ch := name[i]
-		if i == 0 {
-			if !((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_') {
+	first := true
+	for _, r := range name {
+		if first {
+			if !isIdentStartRune(r) {
 				return false
 			}
+			first = false
 			continue
 		}
-		if !((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
-			(ch >= '0' && ch <= '9') || ch == '_' || ch == ':' || ch == '.') {
+		if !isIdentContRune(r) {
 			return false
 		}
 	}
@@ -467,13 +488,18 @@ func formatEndpoint(ep cql2.IntervalEndpoint) string {
 
 // writeIntervalEndpoint emits an INTERVAL endpoint. String forms (timestamp,
 // date, unbounded) are wrapped in single quotes; property references are
-// emitted unquoted using the standard property-ref formatting.
-func writeIntervalEndpoint(b *strings.Builder, ep cql2.IntervalEndpoint) {
-	if pr, ok := ep.(*cql2.PropertyRef); ok {
-		writePropertyRef(b, pr.Name)
-		return
+// emitted unquoted using the standard property-ref formatting; function
+// calls are recursively encoded.
+func (e *encoder) writeIntervalEndpoint(b *strings.Builder, ep cql2.IntervalEndpoint) error {
+	switch v := ep.(type) {
+	case *cql2.PropertyRef:
+		writePropertyRef(b, v.Name)
+		return nil
+	case *cql2.FunctionCall:
+		return e.writeNode(b, v, precTop)
 	}
 	b.WriteByte('\'')
 	b.WriteString(formatEndpoint(ep))
 	b.WriteByte('\'')
+	return nil
 }

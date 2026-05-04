@@ -2,18 +2,18 @@ package json
 
 import (
 	"bytes"
-	stdjson "encoding/json"
+	"encoding/json"
 	"fmt"
 	"strconv"
 
-	cql2 "github.com/example/go-cql2"
-	"github.com/example/go-cql2/geojson"
+	cql2 "github.com/exergy-dev/go-cql2"
+	"github.com/exergy-dev/go-cql2/geojson"
 )
 
 // Encode serializes n as compact, deterministic CQL2-JSON. Object keys are
 // emitted in fixed order so identical ASTs always produce identical bytes.
 //
-// Geometry literals are delegated to github.com/example/go-cql2/geojson.
+// Geometry literals are delegated to github.com/exergy-dev/go-cql2/geojson.
 //
 // Options are accepted for API symmetry but currently no option modifies
 // JSON output.
@@ -68,7 +68,7 @@ func encodeNode(buf *bytes.Buffer, n cql2.Node) error {
 		return nil
 	case *cql2.DateLit:
 		buf.WriteString(`{"date":`)
-		if err := writeJSONString(buf, x.Value.Format("2006-01-02")); err != nil {
+		if err := writeJSONString(buf, x.Value.UTC().Format("2006-01-02")); err != nil {
 			return err
 		}
 		buf.WriteByte('}')
@@ -156,10 +156,12 @@ func writeEndpoint(buf *bytes.Buffer, e cql2.IntervalEndpoint) error {
 	case *cql2.TimestampLit:
 		return writeJSONString(buf, cql2.FormatTimestamp(v.Value))
 	case *cql2.DateLit:
-		return writeJSONString(buf, v.Value.Format("2006-01-02"))
+		return writeJSONString(buf, v.Value.UTC().Format("2006-01-02"))
 	case *cql2.PropertyRef:
 		// Property endpoints are emitted as objects so they round-trip with
 		// the JSON parser's interval-endpoint reader.
+		return encodeNode(buf, v)
+	case *cql2.FunctionCall:
 		return encodeNode(buf, v)
 	case nil:
 		return writeJSONString(buf, "..")
@@ -168,7 +170,7 @@ func writeEndpoint(buf *bytes.Buffer, e cql2.IntervalEndpoint) error {
 }
 
 func writeJSONString(buf *bytes.Buffer, s string) error {
-	b, err := stdjson.Marshal(s)
+	b, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}

@@ -108,3 +108,29 @@ func (e *UnliftableError) Error() string {
 	}
 	return fmt.Sprintf("cannot lift %T", e.Value)
 }
+
+// ValidationError is returned by Validate when an AST is structurally
+// well-formed (parsed without error) but violates spec arity or shape
+// constraints — for example a comparison op with three args, or IN
+// whose RHS is not an ArrayLit.
+type ValidationError struct {
+	// Op is set when the violation is on an *Op node; empty otherwise.
+	Op Operator
+	// Function is set when the violation is on a *FunctionCall node.
+	Function string
+	// Msg is a human-readable description of the violation.
+	Msg string
+	// Node is the offending AST node.
+	Node Node
+}
+
+func (e *ValidationError) Error() string {
+	switch {
+	case e.Op != "":
+		return fmt.Sprintf("validation: operator %q: %s", string(e.Op), e.Msg)
+	case e.Function != "":
+		return fmt.Sprintf("validation: function %q: %s", e.Function, e.Msg)
+	default:
+		return fmt.Sprintf("validation: %s", e.Msg)
+	}
+}

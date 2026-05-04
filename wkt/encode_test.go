@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	cql2 "github.com/example/go-cql2"
-	"github.com/example/go-cql2/wkt"
+	cql2 "github.com/exergy-dev/go-cql2"
+	"github.com/exergy-dev/go-cql2/wkt"
 )
 
 func TestEncodeCanonical(t *testing.T) {
@@ -37,7 +37,7 @@ func TestEncodeCanonical(t *testing.T) {
 		},
 		{
 			"MultiLineString",
-			&cql2.MultiLineStr{Lines: []cql2.LineString{
+			&cql2.MultiLineString{Lines: []cql2.LineString{
 				{Coords: []cql2.Coord{{X: 1, Y: 2}, {X: 3, Y: 4}}},
 			}},
 			"MULTILINESTRING((1 2, 3 4))",
@@ -51,7 +51,7 @@ func TestEncodeCanonical(t *testing.T) {
 		},
 		{
 			"GeometryCollection",
-			&cql2.GeometryColl{Geoms: []cql2.Geometry{
+			&cql2.GeometryCollection{Geoms: []cql2.Geometry{
 				&cql2.Point{Coord: cql2.Coord{X: 1, Y: 2}},
 				&cql2.LineString{Coords: []cql2.Coord{{X: 3, Y: 4}, {X: 5, Y: 6}}},
 			}},

@@ -4,7 +4,7 @@
 // The top-level Parse / MustParse / Encode entry points dispatch to the
 // json and text subpackages. Those subpackages register themselves with
 // cql2 via init(); a side-effect import of either package therefore wires
-// up its codec. The convenience package github.com/example/go-cql2/codecs
+// up its codec. The convenience package github.com/exergy-dev/go-cql2/codecs
 // imports both for callers that just want everything ready.
 package cql2
 
@@ -65,13 +65,13 @@ func getCodecs() (parseT, parseJ func([]byte, []Option) (Node, error),
 //   - anything else -> Text
 //
 // To use Parse, callers must side-effect-import a codec (e.g. the
-// "github.com/example/go-cql2/codecs" convenience package).
+// "github.com/exergy-dev/go-cql2/codecs" convenience package).
 //
 // Recognized options vary by sub-codec; see text.Parse and json.Parse.
 func Parse(input []byte, opts ...Option) (Node, error) {
 	parseT, parseJ, _, _ := getCodecs()
 	if parseT == nil || parseJ == nil {
-		return nil, fmt.Errorf("cql2: codec not registered (import github.com/example/go-cql2/codecs or a specific codec)")
+		return nil, fmt.Errorf("cql2: codec not registered (import github.com/exergy-dev/go-cql2/codecs or a specific codec)")
 	}
 	t := trimLeadingWS(input)
 	if len(t) == 0 {
@@ -92,9 +92,10 @@ func Parse(input []byte, opts ...Option) (Node, error) {
 	}
 }
 
-// MustParse is Parse but panics on error.
-func MustParse(input string, opts ...Option) Node {
-	n, err := Parse([]byte(input), opts...)
+// MustParse is Parse but panics on error. Symmetric with Parse — the
+// input is a byte slice; convert string callers with []byte(s).
+func MustParse(input []byte, opts ...Option) Node {
+	n, err := Parse(input, opts...)
 	if err != nil {
 		panic(err)
 	}
@@ -106,7 +107,7 @@ func MustParse(input string, opts ...Option) Node {
 func Encode(n Node, enc Encoding, opts ...Option) ([]byte, error) {
 	_, _, encT, encJ := getCodecs()
 	if encT == nil || encJ == nil {
-		return nil, fmt.Errorf("cql2: codec not registered (import github.com/example/go-cql2/codecs or a specific codec)")
+		return nil, fmt.Errorf("cql2: codec not registered (import github.com/exergy-dev/go-cql2/codecs or a specific codec)")
 	}
 	switch enc {
 	case EncodingText:

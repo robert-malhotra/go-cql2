@@ -33,18 +33,19 @@ through `encoding/json` to `interface{}` and compared with
 `reflect.DeepEqual`. For a small allowlist of examples (see
 `relaxedJSONByteEquality` in `conformance_test.go`), even structural
 canonicalization is too strict because of legitimate normalizations the
-v0.6 codec introduces; for those, the test instead requires only that
+codec introduces; for those, the test instead requires only that
 `Parse(encoded)` is `cql2.Equal` to the original AST (semantic
 round-trip). The allowlist:
 
-- **24–27** — operator names canonicalized: `t_finishedBy` →
-  `t_finishedby`. The CQL2 spec says ops are case-insensitive; the AST
-  stores the canonical lowercased form for these temporal ops, so the
-  encoder emits lowercase.
 - **31–33** — inline-op form normalized to function-form on encode:
   `{"op":"avg","args":...}` → `{"function":{"name":"avg","args":...}}`.
   Unknown op names parse to `*FunctionCall`, which always emits the
   function-form on encode. Both forms parse to the same AST.
+
+(Examples 24–27 used to be in this allowlist when temporal op names were
+canonicalized to lowercase. The AST now stores ops in spec spelling
+— `t_finishedBy`, `t_metBy`, `t_overlappedBy`, `t_startedBy` — so those
+examples now byte-match the source.)
 
 For the rest of the corpus, the canonicalization handles:
 

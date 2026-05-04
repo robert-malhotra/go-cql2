@@ -1,6 +1,7 @@
 package cql2
 
 import (
+	"encoding/json"
 	"reflect"
 	"time"
 )
@@ -129,9 +130,23 @@ func Children(n Node) []Node {
 	return nil
 }
 
-// Equal reports structural equality of two AST nodes. Positions in any
-// associated PositionMap are not considered.
+// Equal reports structural equality of two AST nodes with value-based
+// semantics for numeric literals: NumLit("1.0") and NumLit("1") are equal.
+// Use EqualVerbatim to compare the source-string spellings of NumLits.
+// Positions in any associated PositionMap are not considered.
 func Equal(a, b Node) bool {
+	return equal(a, b, false)
+}
+
+// EqualVerbatim reports structural equality with source-string-sensitive
+// numeric comparison: NumLit("1.0") and NumLit("1") are NOT equal. Use this
+// when round-tripping requires byte-identical numeric spellings; use Equal
+// for the more common "do these mean the same thing" check.
+func EqualVerbatim(a, b Node) bool {
+	return equal(a, b, true)
+}
+
+func equal(a, b Node, verbatim bool) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
@@ -142,8 +157,7 @@ func Equal(a, b Node) bool {
 	case *BoolLit:
 		return x.Value == b.(*BoolLit).Value
 	case *NumLit:
-		// Compare by source string form for fidelity.
-		return string(x.Value) == string(b.(*NumLit).Value)
+		return numLitEqual(x.Value, b.(*NumLit).Value, verbatim)
 	case *StringLit:
 		return x.Value == b.(*StringLit).Value
 	case *NullLit:
@@ -174,7 +188,7 @@ func Equal(a, b Node) bool {
 			return false
 		}
 		for i := range x.Elements {
-			if !Equal(x.Elements[i], y.Elements[i]) {
+			if !equal(x.Elements[i], y.Elements[i], verbatim) {
 				return false
 			}
 		}
@@ -187,7 +201,7 @@ func Equal(a, b Node) bool {
 			return false
 		}
 		for i := range x.Args {
-			if !Equal(x.Args[i], y.Args[i]) {
+			if !equal(x.Args[i], y.Args[i], verbatim) {
 				return false
 			}
 		}
@@ -198,7 +212,7 @@ func Equal(a, b Node) bool {
 			return false
 		}
 		for i := range x.Args {
-			if !Equal(x.Args[i], y.Args[i]) {
+			if !equal(x.Args[i], y.Args[i], verbatim) {
 				return false
 			}
 		}
@@ -218,6 +232,28 @@ func equalEndpoint(a, b IntervalEndpoint) bool {
 		return true
 	}
 	return Equal(endpointAsNode(a), endpointAsNode(b))
+}
+
+// numLitEqual compares two json.Number literals. Verbatim mode requires
+// byte-identical source spellings; otherwise the values are compared
+// numerically: integers via Int64 (covers 64-bit precision exactly) and
+// otherwise via Float64 (subject to IEEE 754 rounding for very large or
+// high-precision decimals — acceptable for filter equality).
+func numLitEqual(a, b json.Number, verbatim bool) bool {
+	if string(a) == string(b) {
+		return true
+	}
+	if verbatim {
+		return false
+	}
+	if ai, aerr := a.Int64(); aerr == nil {
+		if bi, berr := b.Int64(); berr == nil {
+			return ai == bi
+		}
+	}
+	af, aerr := a.Float64()
+	bf, berr := b.Float64()
+	return aerr == nil && berr == nil && af == bf
 }
 
 // Clone returns a deep copy of n. The result shares no slices or pointers
@@ -295,6 +331,12 @@ func cloneEndpoint(e IntervalEndpoint) IntervalEndpoint {
 	case *PropertyRef:
 		c := *v
 		return &c
+	case *FunctionCall:
+		args := make([]Node, len(v.Args))
+		for i, a := range v.Args {
+			args[i] = Clone(a)
+		}
+		return &FunctionCall{Name: v.Name, Args: args}
 	}
 	return e
 }
@@ -328,12 +370,12 @@ func cloneGeom(g Geometry) Geometry {
 		pts := make([]Point, len(x.Points))
 		copy(pts, x.Points)
 		return &MultiPoint{Points: pts}
-	case *MultiLineStr:
+	case *MultiLineString:
 		lines := make([]LineString, len(x.Lines))
 		for i, l := range x.Lines {
 			lines[i] = LineString{Coords: cloneCoords(l.Coords)}
 		}
-		return &MultiLineStr{Lines: lines}
+		return &MultiLineString{Lines: lines}
 	case *MultiPolygon:
 		polys := make([]Polygon, len(x.Polys))
 		for i, p := range x.Polys {
@@ -344,12 +386,12 @@ func cloneGeom(g Geometry) Geometry {
 			polys[i] = Polygon{Rings: rings}
 		}
 		return &MultiPolygon{Polys: polys}
-	case *GeometryColl:
+	case *GeometryCollection:
 		geoms := make([]Geometry, len(x.Geoms))
 		for i, gg := range x.Geoms {
 			geoms[i] = cloneGeom(gg)
 		}
-		return &GeometryColl{Geoms: geoms}
+		return &GeometryCollection{Geoms: geoms}
 	}
 	return g
 }

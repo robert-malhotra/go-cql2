@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	cql2 "github.com/example/go-cql2"
-	"github.com/example/go-cql2/wkt"
+	cql2 "github.com/exergy-dev/go-cql2"
+	"github.com/exergy-dev/go-cql2/wkt"
 )
 
 func TestParseRoundTrip(t *testing.T) {
@@ -87,7 +87,7 @@ func TestParseRoundTrip(t *testing.T) {
 		{
 			name: "MultiLineString",
 			in:   "MULTILINESTRING((1 2, 3 4), (5 6, 7 8))",
-			want: &cql2.MultiLineStr{Lines: []cql2.LineString{
+			want: &cql2.MultiLineString{Lines: []cql2.LineString{
 				{Coords: []cql2.Coord{{X: 1, Y: 2}, {X: 3, Y: 4}}},
 				{Coords: []cql2.Coord{{X: 5, Y: 6}, {X: 7, Y: 8}}},
 			}},
@@ -103,7 +103,7 @@ func TestParseRoundTrip(t *testing.T) {
 		{
 			name: "GeometryCollection",
 			in:   "GEOMETRYCOLLECTION(POINT(1 2), LINESTRING(3 4, 5 6))",
-			want: &cql2.GeometryColl{Geoms: []cql2.Geometry{
+			want: &cql2.GeometryCollection{Geoms: []cql2.Geometry{
 				&cql2.Point{Coord: cql2.Coord{X: 1, Y: 2}},
 				&cql2.LineString{Coords: []cql2.Coord{{X: 3, Y: 4}, {X: 5, Y: 6}}},
 			}},
@@ -265,10 +265,10 @@ func TestParseErrorPositionMidLine(t *testing.T) {
 
 func TestParseZTag(t *testing.T) {
 	tests := []struct {
-		name     string
-		in       string
-		want     cql2.Geometry
-		wantEnc  string
+		name    string
+		in      string
+		want    cql2.Geometry
+		wantEnc string
 	}{
 		{
 			name:    "PointZ",
@@ -363,5 +363,44 @@ func TestParseBytes(t *testing.T) {
 	want := &cql2.Point{Coord: cql2.Coord{X: 1, Y: 2}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v want %#v", got, want)
+	}
+}
+
+// TestParseEmptyMultiTypes covers the four EMPTY multi-geometry forms
+// that the encoder emits for zero-length collections. Without parser
+// support, encode → parse round-trip on an empty multi geometry fails.
+func TestParseEmptyMultiTypes(t *testing.T) {
+	tests := []struct {
+		in   string
+		want cql2.Geometry
+	}{
+		{"MULTIPOINT EMPTY", &cql2.MultiPoint{}},
+		{"multipoint empty", &cql2.MultiPoint{}},
+		{"MULTILINESTRING EMPTY", &cql2.MultiLineString{}},
+		{"MULTIPOLYGON EMPTY", &cql2.MultiPolygon{}},
+		{"GEOMETRYCOLLECTION EMPTY", &cql2.GeometryCollection{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := wkt.Parse(tc.in)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tc.in, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Parse(%q): got %#v want %#v", tc.in, got, tc.want)
+			}
+			// Round-trip: Encode(parsed) re-parses to an equal value.
+			out, err := wkt.Encode(got)
+			if err != nil {
+				t.Fatalf("Encode: %v", err)
+			}
+			again, err := wkt.Parse(out)
+			if err != nil {
+				t.Fatalf("re-Parse(%q): %v", out, err)
+			}
+			if !reflect.DeepEqual(again, tc.want) {
+				t.Fatalf("round-trip mismatch: %q -> %q -> %#v", tc.in, out, again)
+			}
+		})
 	}
 }

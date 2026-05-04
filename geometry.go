@@ -41,26 +41,26 @@ type Polygon struct{ Rings [][]Coord }
 // MultiPoint is a collection of points.
 type MultiPoint struct{ Points []Point }
 
-// MultiLineStr is a collection of line strings.
-type MultiLineStr struct{ Lines []LineString }
+// MultiLineString is a collection of line strings.
+type MultiLineString struct{ Lines []LineString }
 
 // MultiPolygon is a collection of polygons.
 type MultiPolygon struct{ Polys []Polygon }
 
-// GeometryColl is a heterogeneous collection of geometries.
-type GeometryColl struct{ Geoms []Geometry }
+// GeometryCollection is a heterogeneous collection of geometries.
+type GeometryCollection struct{ Geoms []Geometry }
 
-func (*Point) GeometryType() GeometryType        { return GeomPoint }
-func (*Point) isGeometry()                       {}
-func (*LineString) GeometryType() GeometryType   { return GeomLineString }
-func (*LineString) isGeometry()                  {}
-func (*Polygon) GeometryType() GeometryType      { return GeomPolygon }
-func (*Polygon) isGeometry()                     {}
-func (*MultiPoint) GeometryType() GeometryType   { return GeomMultiPoint }
-func (*MultiPoint) isGeometry()                  {}
-func (*MultiLineStr) GeometryType() GeometryType { return GeomMultiLineString }
-func (*MultiLineStr) isGeometry()                {}
-func (*MultiPolygon) GeometryType() GeometryType { return GeomMultiPolygon }
-func (*MultiPolygon) isGeometry()                {}
-func (*GeometryColl) GeometryType() GeometryType { return GeomGeometryCollection }
-func (*GeometryColl) isGeometry()                {}
+func (*Point) GeometryType() GeometryType              { return GeomPoint }
+func (*Point) isGeometry()                             {}
+func (*LineString) GeometryType() GeometryType         { return GeomLineString }
+func (*LineString) isGeometry()                        {}
+func (*Polygon) GeometryType() GeometryType            { return GeomPolygon }
+func (*Polygon) isGeometry()                           {}
+func (*MultiPoint) GeometryType() GeometryType         { return GeomMultiPoint }
+func (*MultiPoint) isGeometry()                        {}
+func (*MultiLineString) GeometryType() GeometryType    { return GeomMultiLineString }
+func (*MultiLineString) isGeometry()                   {}
+func (*MultiPolygon) GeometryType() GeometryType       { return GeomMultiPolygon }
+func (*MultiPolygon) isGeometry()                      {}
+func (*GeometryCollection) GeometryType() GeometryType { return GeomGeometryCollection }
+func (*GeometryCollection) isGeometry()                {}

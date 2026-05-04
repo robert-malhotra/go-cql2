@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	cql2 "github.com/example/go-cql2"
+	cql2 "github.com/exergy-dev/go-cql2"
 )
 
 // Parse decodes a GeoJSON geometry document into a cql2.Geometry.
@@ -247,7 +247,7 @@ func parseMultiLineString(obj map[string]json.RawMessage, path string) (cql2.Geo
 		}
 		lines[i] = cql2.LineString{Coords: coords}
 	}
-	return &cql2.MultiLineStr{Lines: lines}, nil
+	return &cql2.MultiLineString{Lines: lines}, nil
 }
 
 func parseMultiPolygon(obj map[string]json.RawMessage, path string) (cql2.Geometry, error) {
@@ -293,5 +293,5 @@ func parseGeometryCollection(obj map[string]json.RawMessage, path string) (cql2.
 		}
 		geoms[i] = g
 	}
-	return &cql2.GeometryColl{Geoms: geoms}, nil
+	return &cql2.GeometryCollection{Geoms: geoms}, nil
 }

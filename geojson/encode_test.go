@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
-	cql2 "github.com/example/go-cql2"
-	"github.com/example/go-cql2/geojson"
+	cql2 "github.com/exergy-dev/go-cql2"
+	"github.com/exergy-dev/go-cql2/geojson"
 )
 
 func TestEncodePoint2D(t *testing.T) {
@@ -112,7 +112,7 @@ func TestRoundTripAll(t *testing.T) {
 }
 
 func TestEncodeGeometryCollectionMixed(t *testing.T) {
-	g := &cql2.GeometryColl{Geoms: []cql2.Geometry{
+	g := &cql2.GeometryCollection{Geoms: []cql2.Geometry{
 		&cql2.Point{Coord: cql2.Coord{X: 1, Y: 2}},
 		&cql2.LineString{Coords: []cql2.Coord{{X: 3, Y: 4}, {X: 5, Y: 6}}},
 	}}

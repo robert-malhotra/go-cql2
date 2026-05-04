@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	cql2 "github.com/example/go-cql2"
+	cql2 "github.com/exergy-dev/go-cql2"
 )
 
 // Encode serializes a cql2.Geometry as compact, deterministic GeoJSON
@@ -63,7 +63,7 @@ func encodeGeom(buf *bytes.Buffer, g cql2.Geometry) error {
 		}
 		buf.WriteString(`]}`)
 		return nil
-	case *cql2.MultiLineStr:
+	case *cql2.MultiLineString:
 		buf.WriteString(`{"type":"MultiLineString","coordinates":[`)
 		for i, ls := range v.Lines {
 			if i > 0 {
@@ -83,7 +83,7 @@ func encodeGeom(buf *bytes.Buffer, g cql2.Geometry) error {
 		}
 		buf.WriteString(`]}`)
 		return nil
-	case *cql2.GeometryColl:
+	case *cql2.GeometryCollection:
 		buf.WriteString(`{"type":"GeometryCollection","geometries":[`)
 		for i, child := range v.Geoms {
 			if i > 0 {

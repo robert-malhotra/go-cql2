@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	cql2 "github.com/example/go-cql2"
+	cql2 "github.com/exergy-dev/go-cql2"
 )
 
 // Encode serialises a cql2.Geometry to its canonical WKT representation.
@@ -44,11 +44,11 @@ func writeGeometry(b *strings.Builder, g cql2.Geometry) error {
 		return writePolygon(b, v)
 	case *cql2.MultiPoint:
 		return writeMultiPoint(b, v)
-	case *cql2.MultiLineStr:
+	case *cql2.MultiLineString:
 		return writeMultiLineString(b, v)
 	case *cql2.MultiPolygon:
 		return writeMultiPolygon(b, v)
-	case *cql2.GeometryColl:
+	case *cql2.GeometryCollection:
 		return writeGeometryCollection(b, v)
 	default:
 		return encodeError("unsupported geometry type %T", g)
@@ -124,7 +124,7 @@ func writeMultiPoint(b *strings.Builder, mp *cql2.MultiPoint) error {
 	return nil
 }
 
-func writeMultiLineString(b *strings.Builder, ml *cql2.MultiLineStr) error {
+func writeMultiLineString(b *strings.Builder, ml *cql2.MultiLineString) error {
 	if ml == nil {
 		return encodeError("nil MultiLineString")
 	}
@@ -175,7 +175,7 @@ func writeMultiPolygon(b *strings.Builder, mp *cql2.MultiPolygon) error {
 	return nil
 }
 
-func writeGeometryCollection(b *strings.Builder, gc *cql2.GeometryColl) error {
+func writeGeometryCollection(b *strings.Builder, gc *cql2.GeometryCollection) error {
 	if gc == nil {
 		return encodeError("nil GeometryCollection")
 	}

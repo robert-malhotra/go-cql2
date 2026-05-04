@@ -6,14 +6,14 @@
 // Example:
 //
 //	import (
-//	    cql2 "github.com/example/go-cql2"
-//	    _ "github.com/example/go-cql2/codecs"
+//	    cql2 "github.com/exergy-dev/go-cql2"
+//	    _ "github.com/exergy-dev/go-cql2/codecs"
 //	)
 //
 //	n, err := cql2.Parse([]byte("a = 1"))
 package codecs
 
 import (
-	_ "github.com/example/go-cql2/json"
-	_ "github.com/example/go-cql2/text"
+	_ "github.com/exergy-dev/go-cql2/json"
+	_ "github.com/exergy-dev/go-cql2/text"
 )

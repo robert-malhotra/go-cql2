@@ -234,15 +234,50 @@ func TestEqualNilSafety(t *testing.T) {
 }
 
 func TestEqualLiteralValueSemantics(t *testing.T) {
+	// Equal compares NumLits by value: 1.0 and 1.00 and 1 are all equal.
 	a := &NumLit{Value: json.Number("1.0")}
 	b := &NumLit{Value: json.Number("1.00")}
-	if Equal(a, b) {
-		t.Fatalf("NumLit equality should be string-form sensitive")
+	c := &NumLit{Value: json.Number("1")}
+	if !Equal(a, b) {
+		t.Fatalf("Equal: NumLit(1.0) vs NumLit(1.00) should be value-equal")
+	}
+	if !Equal(a, c) {
+		t.Fatalf("Equal: NumLit(1.0) vs NumLit(1) should be value-equal")
+	}
+	// Different value → not equal.
+	if Equal(a, &NumLit{Value: json.Number("2")}) {
+		t.Fatalf("Equal: NumLit(1) vs NumLit(2) should differ")
+	}
+	// Negative / sign-equivalent forms.
+	if !Equal(&NumLit{Value: json.Number("-0")}, &NumLit{Value: json.Number("0")}) {
+		t.Fatalf("Equal: NumLit(-0) vs NumLit(0) should be value-equal")
 	}
 	t1 := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 	t2 := t1.In(time.FixedZone("X", 3600))
 	if !Equal(&TimestampLit{Value: t1}, &TimestampLit{Value: t2}) {
 		t.Fatalf("TimestampLit should use time.Time.Equal semantics")
+	}
+}
+
+// TestEqualVerbatim pins the source-string-sensitive variant.
+func TestEqualVerbatim(t *testing.T) {
+	a := &NumLit{Value: json.Number("1.0")}
+	b := &NumLit{Value: json.Number("1.00")}
+	if EqualVerbatim(a, b) {
+		t.Fatalf("EqualVerbatim should be source-string sensitive (1.0 vs 1.00)")
+	}
+	c := &NumLit{Value: json.Number("1.0")}
+	if !EqualVerbatim(a, c) {
+		t.Fatalf("EqualVerbatim should match identical source spellings")
+	}
+	// Verbatim threads through compound nodes too.
+	op1 := &Op{Op: OpEq, Args: []Node{&PropertyRef{Name: "x"}, a}}
+	op2 := &Op{Op: OpEq, Args: []Node{&PropertyRef{Name: "x"}, b}}
+	if !Equal(op1, op2) {
+		t.Fatalf("Equal should treat 1.0 and 1.00 as value-equal inside an Op")
+	}
+	if EqualVerbatim(op1, op2) {
+		t.Fatalf("EqualVerbatim should reject 1.0 vs 1.00 inside an Op")
 	}
 }
 

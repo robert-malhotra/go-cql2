@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	cql2 "github.com/example/go-cql2"
+	cql2 "github.com/exergy-dev/go-cql2"
 )
 
 func TestEncode_Booleans(t *testing.T) {
