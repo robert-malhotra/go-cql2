@@ -207,15 +207,6 @@ func (p *parser) consumeToken() (token, error) {
 	return p.nextToken()
 }
 
-// putBack stuffs t back into the lookahead slot. Only safe when slot empty.
-func (p *parser) putBack(t token) {
-	if p.hasPeek {
-		panic("text: putBack on full lookahead")
-	}
-	p.peeked = t
-	p.hasPeek = true
-}
-
 func (p *parser) nextToken() (token, error) {
 	p.skipWS()
 	pos := p.curPos()
