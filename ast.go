@@ -3,6 +3,8 @@ package cql2
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/exergy-dev/go-topology-suite/geom"
 )
 
 // Node is the root interface implemented by every AST node.
@@ -29,6 +31,7 @@ const (
 	KindProperty
 	KindOp
 	KindFunction
+	KindUnbounded
 )
 
 // BoolLit is a boolean literal.
@@ -49,20 +52,19 @@ type TimestampLit struct{ Value time.Time }
 // DateLit is a calendar date literal (UTC midnight).
 type DateLit struct{ Value time.Time }
 
-// IntervalLit is a temporal interval with two endpoints.
+// IntervalLit is a temporal interval with two endpoints. Each endpoint is a
+// *TimestampLit, *DateLit, *PropertyRef, *FunctionCall, or *Unbounded; Validate
+// enforces this shape.
 type IntervalLit struct {
-	Start IntervalEndpoint
-	End   IntervalEndpoint
+	Start Node
+	End   Node
 }
 
-// IntervalEndpoint is implemented by valid endpoint kinds for IntervalLit.
-type IntervalEndpoint interface{ isIntervalEndpoint() }
-
-// Unbounded marks an open-ended interval endpoint ("..").
+// Unbounded is an open-ended interval endpoint ("..").
 type Unbounded struct{}
 
 // GeomLit wraps a parsed geometry value.
-type GeomLit struct{ Geom Geometry }
+type GeomLit struct{ Geom geom.Geometry }
 
 // BBoxLit is a bounding box literal (4 floats for 2D, 6 for 3D).
 type BBoxLit struct{ Coords []float64 }
@@ -113,11 +115,5 @@ func (*Op) Kind() NodeKind           { return KindOp }
 func (*Op) isNode()                  {}
 func (*FunctionCall) Kind() NodeKind { return KindFunction }
 func (*FunctionCall) isNode()        {}
-
-// IntervalEndpoint markers.
-
-func (*TimestampLit) isIntervalEndpoint() {}
-func (*DateLit) isIntervalEndpoint()      {}
-func (*Unbounded) isIntervalEndpoint()    {}
-func (*PropertyRef) isIntervalEndpoint()  {}
-func (*FunctionCall) isIntervalEndpoint() {}
+func (*Unbounded) Kind() NodeKind    { return KindUnbounded }
+func (*Unbounded) isNode()           {}

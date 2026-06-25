@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/exergy-dev/go-topology-suite/geom"
 )
 
 func TestBuilder_WorkedExample(t *testing.T) {
@@ -37,7 +39,7 @@ func TestBuilder_WorkedExample(t *testing.T) {
 }
 
 func TestBuilder_LiftTable(t *testing.T) {
-	pt := &Point{Coord: Coord{X: 1, Y: 2}}
+	pt := geom.NewPoint(nil, geom.XY{X: 1, Y: 2})
 	ts := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
 
 	tests := []struct {
@@ -63,7 +65,7 @@ func TestBuilder_LiftTable(t *testing.T) {
 		{"json.Number preserved", json.Number("1.230"), &NumLit{Value: json.Number("1.230")}},
 		{"string", "hello", &StringLit{Value: "hello"}},
 		{"time.Time", ts, &TimestampLit{Value: ts}},
-		{"Geometry", Geometry(pt), &GeomLit{Geom: pt}},
+		{"Geometry", geom.Geometry(pt), &GeomLit{Geom: pt}},
 		{"[]any", []any{1, "x"}, &ArrayLit{Elements: []Node{
 			&NumLit{Value: json.Number("1")},
 			&StringLit{Value: "x"},
@@ -362,7 +364,7 @@ func TestBuilder_Array(t *testing.T) {
 }
 
 func TestBuilder_SpatialPredicates(t *testing.T) {
-	pt := &Point{Coord: Coord{X: 1, Y: 2}}
+	pt := geom.NewPoint(nil, geom.XY{X: 1, Y: 2})
 	got := SIntersects("geom", pt).N
 	want := &Op{Op: OpSIntersects, Args: []Node{
 		&PropertyRef{Name: "geom"},
@@ -423,7 +425,7 @@ func TestBuilder_LitConstructors(t *testing.T) {
 	if !reflect.DeepEqual(Time(ts).N, &TimestampLit{Value: ts}) {
 		t.Fatal("Time")
 	}
-	pt := &Point{}
+	pt := geom.NewEmptyPoint(nil, geom.LayoutXY)
 	if !reflect.DeepEqual(Geom(pt).N, &GeomLit{Geom: pt}) {
 		t.Fatal("Geom")
 	}

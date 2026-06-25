@@ -118,8 +118,11 @@ func TestOGCCorpus(t *testing.T) {
 				return
 			}
 
-			// Step 3: cross-encoding AST equality.
-			if !reflect.DeepEqual(astText, astJSON) {
+			// Step 3: cross-encoding AST equality. Use cql2.Equal instead
+			// of reflect.DeepEqual: gts geometries embed an atomic-pointer
+			// envelope cache that diverges across parsers, and Equal routes
+			// geometry comparison through a stride-aware structural check.
+			if !cql2.Equal(astText, astJSON) {
 				t.Errorf("%s: AST mismatch between text and JSON parse\n"+
 					"  text AST: %#v\n"+
 					"  json AST: %#v",

@@ -36,6 +36,15 @@ type Config struct {
 	MaxDepth int
 }
 
+// DateLocation returns the timezone used to interpret bare DATE literals:
+// c.DateTimezone when set, otherwise UTC. Safe to call on a nil *Config.
+func (c *Config) DateLocation() *time.Location {
+	if c != nil && c.DateTimezone != nil {
+		return c.DateTimezone
+	}
+	return time.UTC
+}
+
 // DefaultMaxDepth is the default upper bound on expression nesting depth.
 // Adversarial inputs can otherwise drive parser recursion until the Go
 // runtime grows the goroutine stack to its hard limit.

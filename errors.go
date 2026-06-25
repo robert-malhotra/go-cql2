@@ -15,18 +15,23 @@ type SyntaxError struct {
 	Expected []string
 }
 
-func (e *SyntaxError) Error() string {
-	var b strings.Builder
-	switch e.Encoding {
-	case EncodingJSON:
-		b.WriteString("json")
-	default:
-		b.WriteString("text")
-	}
-	if e.At != (Pos{}) {
-		fmt.Fprintf(&b, ":%s", e.At.String())
+// writeLocPrefix writes the "<label>[:<pos>]: " head shared by SyntaxError
+// and GeometryError messages.
+func writeLocPrefix(b *strings.Builder, label string, at Pos) {
+	b.WriteString(label)
+	if at != (Pos{}) {
+		fmt.Fprintf(b, ":%s", at.String())
 	}
 	b.WriteString(": ")
+}
+
+func (e *SyntaxError) Error() string {
+	var b strings.Builder
+	label := "text"
+	if e.Encoding == EncodingJSON {
+		label = "json"
+	}
+	writeLocPrefix(&b, label, e.At)
 	if e.Msg != "" {
 		b.WriteString(e.Msg)
 	} else {
@@ -78,16 +83,11 @@ type GeometryError struct {
 
 func (e *GeometryError) Error() string {
 	var b strings.Builder
-	switch e.Encoding {
-	case EncodingJSON:
-		b.WriteString("geojson")
-	default:
-		b.WriteString("wkt")
+	label := "wkt"
+	if e.Encoding == EncodingJSON {
+		label = "geojson"
 	}
-	if e.At != (Pos{}) {
-		fmt.Fprintf(&b, ":%s", e.At.String())
-	}
-	b.WriteString(": ")
+	writeLocPrefix(&b, label, e.At)
 	if e.Msg != "" {
 		b.WriteString(e.Msg)
 	} else {

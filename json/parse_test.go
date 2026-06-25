@@ -9,6 +9,7 @@ import (
 
 	cql2 "github.com/exergy-dev/go-cql2"
 	cqljson "github.com/exergy-dev/go-cql2/json"
+	"github.com/exergy-dev/go-topology-suite/geom"
 )
 
 func TestParseBool(t *testing.T) {
@@ -182,7 +183,7 @@ func TestParseGeometryDelegation(t *testing.T) {
 	if !ok {
 		t.Fatalf("got %T", n)
 	}
-	if _, ok := gl.Geom.(*cql2.Point); !ok {
+	if _, ok := gl.Geom.(*geom.Point); !ok {
 		t.Fatalf("geom: %T", gl.Geom)
 	}
 	// Round-trip through Encode and re-Parse.

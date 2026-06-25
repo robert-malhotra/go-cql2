@@ -9,6 +9,7 @@
 package cql2
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 )
@@ -73,7 +74,7 @@ func Parse(input []byte, opts ...Option) (Node, error) {
 	if parseT == nil || parseJ == nil {
 		return nil, fmt.Errorf("cql2: codec not registered (import github.com/exergy-dev/go-cql2/codecs or a specific codec)")
 	}
-	t := trimLeadingWS(input)
+	t := bytes.TrimLeft(input, " \t\r\n")
 	if len(t) == 0 {
 		return nil, &SyntaxError{Encoding: EncodingText, Msg: "empty input"}
 	}
@@ -116,14 +117,4 @@ func Encode(n Node, enc Encoding, opts ...Option) ([]byte, error) {
 		return encJ(n, opts)
 	}
 	return nil, fmt.Errorf("cql2: unknown encoding %d", enc)
-}
-
-func trimLeadingWS(b []byte) []byte {
-	for i, c := range b {
-		if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
-			continue
-		}
-		return b[i:]
-	}
-	return nil
 }

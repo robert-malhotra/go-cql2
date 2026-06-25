@@ -7,6 +7,7 @@ import (
 	"time"
 
 	cql2 "github.com/exergy-dev/go-cql2"
+	"github.com/exergy-dev/go-topology-suite/geom"
 )
 
 func TestEncode_Booleans(t *testing.T) {
@@ -182,7 +183,7 @@ func TestEncode_NestedNotBetween(t *testing.T) {
 func TestEncode_SpatialOpFunctionForm(t *testing.T) {
 	n := &cql2.Op{Op: cql2.OpSIntersects, Args: []cql2.Node{
 		&cql2.PropertyRef{Name: "g"},
-		&cql2.GeomLit{Geom: &cql2.Point{Coord: cql2.Coord{X: 1, Y: 2}}},
+		&cql2.GeomLit{Geom: geom.NewPoint(nil, geom.XY{X: 1, Y: 2})},
 	}}
 	s, err := Encode(n)
 	if err != nil {
@@ -191,7 +192,7 @@ func TestEncode_SpatialOpFunctionForm(t *testing.T) {
 	if !strings.HasPrefix(s, "S_INTERSECTS(") {
 		t.Errorf("got %q", s)
 	}
-	if !strings.Contains(s, "POINT(1 2)") {
+	if !strings.Contains(s, "POINT (1 2)") {
 		t.Errorf("got %q", s)
 	}
 }

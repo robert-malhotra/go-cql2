@@ -3,7 +3,10 @@ package cql2
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"time"
+
+	"github.com/exergy-dev/go-topology-suite/geom"
 )
 
 // FormatTimestamp formats t in RFC 3339 form for use as a CQL2 timestamp
@@ -52,7 +55,7 @@ func ResultKind(n Node) Kind {
 		return KindResultGeometry
 	case *ArrayLit:
 		return KindResultArray
-	case *PropertyRef, *FunctionCall:
+	case *PropertyRef, *FunctionCall, *Unbounded:
 		return KindUnknown
 	case *Op:
 		return opResultKind(x)
@@ -61,27 +64,15 @@ func ResultKind(n Node) Kind {
 }
 
 func opResultKind(x *Op) Kind {
-	switch x.Op {
-	case OpAnd, OpOr, OpNot,
-		OpEq, OpNeq, OpLt, OpLte, OpGt, OpGte,
-		OpLike, OpBetween, OpIn, OpIsNull,
-		OpSIntersects, OpSEquals, OpSDisjoint, OpSTouches,
-		OpSWithin, OpSOverlaps, OpSCrosses, OpSContains,
-		OpTAfter, OpTBefore, OpTContains, OpTDisjoint,
-		OpTDuring, OpTEquals, OpTFinishedBy, OpTFinishes,
-		OpTIntersects, OpTMeets, OpTMetBy, OpTOverlappedBy,
-		OpTOverlaps, OpTStartedBy, OpTStarts,
-		OpAContains, OpAContainedBy, OpAEquals, OpAOverlaps:
-		return KindResultBoolean
-	case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpPow, OpIDiv:
-		return KindResultNumber
-	case OpCaseI, OpAccentI:
+	m := opTable[x.Op]
+	if m.passthru {
+		// CASEI / ACCENTI inherit the result kind of their operand.
 		if len(x.Args) > 0 {
 			return ResultKind(x.Args[0])
 		}
 		return KindUnknown
 	}
-	return KindUnknown
+	return m.result
 }
 
 // IsBoolean reports whether n evaluates to a boolean.
@@ -97,33 +88,18 @@ func Children(n Node) []Node {
 	}
 	switch x := n.(type) {
 	case *Op:
-		if len(x.Args) == 0 {
-			return nil
-		}
-		out := make([]Node, len(x.Args))
-		copy(out, x.Args)
-		return out
+		return slices.Clone(x.Args)
 	case *FunctionCall:
-		if len(x.Args) == 0 {
-			return nil
-		}
-		out := make([]Node, len(x.Args))
-		copy(out, x.Args)
-		return out
+		return slices.Clone(x.Args)
 	case *ArrayLit:
-		if len(x.Elements) == 0 {
-			return nil
-		}
-		out := make([]Node, len(x.Elements))
-		copy(out, x.Elements)
-		return out
+		return slices.Clone(x.Elements)
 	case *IntervalLit:
 		var out []Node
-		if n2 := endpointAsNode(x.Start); n2 != nil {
-			out = append(out, n2)
+		if x.Start != nil {
+			out = append(out, x.Start)
 		}
-		if n2 := endpointAsNode(x.End); n2 != nil {
-			out = append(out, n2)
+		if x.End != nil {
+			out = append(out, x.End)
 		}
 		return out
 	}
@@ -153,6 +129,7 @@ func equal(a, b Node, verbatim bool) bool {
 	if reflect.TypeOf(a) != reflect.TypeOf(b) {
 		return false
 	}
+	eq := func(p, q Node) bool { return equal(p, q, verbatim) }
 	switch x := a.(type) {
 	case *BoolLit:
 		return x.Value == b.(*BoolLit).Value
@@ -168,70 +145,25 @@ func equal(a, b Node, verbatim bool) bool {
 		return x.Value.Equal(b.(*DateLit).Value)
 	case *IntervalLit:
 		y := b.(*IntervalLit)
-		return equalEndpoint(x.Start, y.Start) && equalEndpoint(x.End, y.End)
+		return equal(x.Start, y.Start, verbatim) && equal(x.End, y.End, verbatim)
+	case *Unbounded:
+		return true
 	case *GeomLit:
-		return reflect.DeepEqual(x.Geom, b.(*GeomLit).Geom)
+		return geomEqual(x.Geom, b.(*GeomLit).Geom)
 	case *BBoxLit:
-		y := b.(*BBoxLit)
-		if len(x.Coords) != len(y.Coords) {
-			return false
-		}
-		for i := range x.Coords {
-			if x.Coords[i] != y.Coords[i] {
-				return false
-			}
-		}
-		return true
+		return slices.Equal(x.Coords, b.(*BBoxLit).Coords)
 	case *ArrayLit:
-		y := b.(*ArrayLit)
-		if len(x.Elements) != len(y.Elements) {
-			return false
-		}
-		for i := range x.Elements {
-			if !equal(x.Elements[i], y.Elements[i], verbatim) {
-				return false
-			}
-		}
-		return true
+		return slices.EqualFunc(x.Elements, b.(*ArrayLit).Elements, eq)
 	case *PropertyRef:
 		return x.Name == b.(*PropertyRef).Name
 	case *Op:
 		y := b.(*Op)
-		if x.Op != y.Op || len(x.Args) != len(y.Args) {
-			return false
-		}
-		for i := range x.Args {
-			if !equal(x.Args[i], y.Args[i], verbatim) {
-				return false
-			}
-		}
-		return true
+		return x.Op == y.Op && slices.EqualFunc(x.Args, y.Args, eq)
 	case *FunctionCall:
 		y := b.(*FunctionCall)
-		if x.Name != y.Name || len(x.Args) != len(y.Args) {
-			return false
-		}
-		for i := range x.Args {
-			if !equal(x.Args[i], y.Args[i], verbatim) {
-				return false
-			}
-		}
-		return true
+		return x.Name == y.Name && slices.EqualFunc(x.Args, y.Args, eq)
 	}
 	return false
-}
-
-func equalEndpoint(a, b IntervalEndpoint) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	if reflect.TypeOf(a) != reflect.TypeOf(b) {
-		return false
-	}
-	if _, ok := a.(*Unbounded); ok {
-		return true
-	}
-	return Equal(endpointAsNode(a), endpointAsNode(b))
 }
 
 // numLitEqual compares two json.Number literals. Verbatim mode requires
@@ -264,134 +196,107 @@ func Clone(n Node) Node {
 	}
 	switch x := n.(type) {
 	case *BoolLit:
-		c := *x
-		return &c
+		return clonePtr(x)
 	case *NumLit:
-		c := *x
-		return &c
+		return clonePtr(x)
 	case *StringLit:
-		c := *x
-		return &c
+		return clonePtr(x)
 	case *NullLit:
 		return &NullLit{}
 	case *TimestampLit:
-		c := *x
-		return &c
+		return clonePtr(x)
 	case *DateLit:
-		c := *x
-		return &c
+		return clonePtr(x)
 	case *IntervalLit:
-		out := &IntervalLit{}
-		out.Start = cloneEndpoint(x.Start)
-		out.End = cloneEndpoint(x.End)
-		return out
+		return &IntervalLit{Start: Clone(x.Start), End: Clone(x.End)}
+	case *Unbounded:
+		return &Unbounded{}
 	case *GeomLit:
-		return &GeomLit{Geom: cloneGeom(x.Geom)}
+		// gts geometries are immutable after construction, so the same
+		// pointer is safe to share across cloned ASTs.
+		return &GeomLit{Geom: x.Geom}
 	case *BBoxLit:
-		coords := make([]float64, len(x.Coords))
-		copy(coords, x.Coords)
-		return &BBoxLit{Coords: coords}
+		return &BBoxLit{Coords: slices.Clone(x.Coords)}
 	case *ArrayLit:
-		els := make([]Node, len(x.Elements))
-		for i, e := range x.Elements {
-			els[i] = Clone(e)
-		}
-		return &ArrayLit{Elements: els}
+		return &ArrayLit{Elements: mapSlice(x.Elements, Clone)}
 	case *PropertyRef:
-		c := *x
-		return &c
+		return clonePtr(x)
 	case *Op:
-		args := make([]Node, len(x.Args))
-		for i, a := range x.Args {
-			args[i] = Clone(a)
-		}
-		return &Op{Op: x.Op, Args: args}
+		return &Op{Op: x.Op, Args: mapSlice(x.Args, Clone)}
 	case *FunctionCall:
-		args := make([]Node, len(x.Args))
-		for i, a := range x.Args {
-			args[i] = Clone(a)
-		}
-		return &FunctionCall{Name: x.Name, Args: args}
+		return &FunctionCall{Name: x.Name, Args: mapSlice(x.Args, Clone)}
 	}
 	return n
 }
 
-func cloneEndpoint(e IntervalEndpoint) IntervalEndpoint {
-	switch v := e.(type) {
-	case nil:
-		return nil
-	case *TimestampLit:
-		c := *v
-		return &c
-	case *DateLit:
-		c := *v
-		return &c
-	case *Unbounded:
-		return &Unbounded{}
-	case *PropertyRef:
-		c := *v
-		return &c
-	case *FunctionCall:
-		args := make([]Node, len(v.Args))
-		for i, a := range v.Args {
-			args[i] = Clone(a)
-		}
-		return &FunctionCall{Name: v.Name, Args: args}
+// geomEqual compares two gts geometries structurally — same concrete type,
+// same layout, same flat coordinates, same children for collection types.
+// Cannot use reflect.DeepEqual because baseGeom embeds an atomic.Pointer
+// for the lazy envelope cache whose contents diverge after first read.
+func geomEqual(a, b geom.Geometry) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
 	}
-	return e
-}
-
-func cloneCoords(in []Coord) []Coord {
-	if in == nil {
-		return nil
+	if a.Type() != b.Type() || a.Layout() != b.Layout() {
+		return false
 	}
-	out := make([]Coord, len(in))
-	copy(out, in)
-	return out
-}
-
-func cloneGeom(g Geometry) Geometry {
-	if g == nil {
-		return nil
-	}
-	switch x := g.(type) {
-	case *Point:
-		c := *x
-		return &c
-	case *LineString:
-		return &LineString{Coords: cloneCoords(x.Coords)}
-	case *Polygon:
-		rings := make([][]Coord, len(x.Rings))
-		for i, r := range x.Rings {
-			rings[i] = cloneCoords(r)
+	switch x := a.(type) {
+	case *geom.Point:
+		y := b.(*geom.Point)
+		if x.IsEmpty() != y.IsEmpty() {
+			return false
 		}
-		return &Polygon{Rings: rings}
-	case *MultiPoint:
-		pts := make([]Point, len(x.Points))
-		copy(pts, x.Points)
-		return &MultiPoint{Points: pts}
-	case *MultiLineString:
-		lines := make([]LineString, len(x.Lines))
-		for i, l := range x.Lines {
-			lines[i] = LineString{Coords: cloneCoords(l.Coords)}
+		return slices.Equal(x.FlatCoords(), y.FlatCoords())
+	case *geom.LineString:
+		return slices.Equal(x.FlatCoords(), b.(*geom.LineString).FlatCoords())
+	case *geom.LinearRing:
+		return slices.Equal(x.FlatCoords(), b.(*geom.LinearRing).FlatCoords())
+	case *geom.Polygon:
+		y := b.(*geom.Polygon)
+		if x.NumRings() != y.NumRings() {
+			return false
 		}
-		return &MultiLineString{Lines: lines}
-	case *MultiPolygon:
-		polys := make([]Polygon, len(x.Polys))
-		for i, p := range x.Polys {
-			rings := make([][]Coord, len(p.Rings))
-			for j, r := range p.Rings {
-				rings[j] = cloneCoords(r)
+		for i := 0; i < x.NumRings(); i++ {
+			if !slices.Equal(x.Ring(i), y.Ring(i)) {
+				return false
 			}
-			polys[i] = Polygon{Rings: rings}
 		}
-		return &MultiPolygon{Polys: polys}
-	case *GeometryCollection:
-		geoms := make([]Geometry, len(x.Geoms))
-		for i, gg := range x.Geoms {
-			geoms[i] = cloneGeom(gg)
+		return true
+	case *geom.MultiPoint:
+		return slices.Equal(x.FlatCoords(), b.(*geom.MultiPoint).FlatCoords())
+	case *geom.MultiLineString:
+		y := b.(*geom.MultiLineString)
+		if x.NumGeometries() != y.NumGeometries() {
+			return false
 		}
-		return &GeometryCollection{Geoms: geoms}
+		for i := 0; i < x.NumGeometries(); i++ {
+			if !geomEqual(x.LineStringAt(i), y.LineStringAt(i)) {
+				return false
+			}
+		}
+		return true
+	case *geom.MultiPolygon:
+		y := b.(*geom.MultiPolygon)
+		if x.NumGeometries() != y.NumGeometries() {
+			return false
+		}
+		for i := 0; i < x.NumGeometries(); i++ {
+			if !geomEqual(x.PolygonAt(i), y.PolygonAt(i)) {
+				return false
+			}
+		}
+		return true
+	case *geom.GeometryCollection:
+		y := b.(*geom.GeometryCollection)
+		if x.NumGeometries() != y.NumGeometries() {
+			return false
+		}
+		for i := 0; i < x.NumGeometries(); i++ {
+			if !geomEqual(x.GeometryAt(i), y.GeometryAt(i)) {
+				return false
+			}
+		}
+		return true
 	}
-	return g
+	return reflect.DeepEqual(a, b)
 }

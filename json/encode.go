@@ -7,7 +7,7 @@ import (
 	"strconv"
 
 	cql2 "github.com/exergy-dev/go-cql2"
-	"github.com/exergy-dev/go-cql2/geojson"
+	"github.com/exergy-dev/go-topology-suite/geojson"
 )
 
 // Encode serializes n as compact, deterministic CQL2-JSON. Object keys are
@@ -95,7 +95,7 @@ func encodeNode(buf *bytes.Buffer, n cql2.Node) error {
 		buf.WriteString(`]}`)
 		return nil
 	case *cql2.GeomLit:
-		b, err := geojson.Encode(x.Geom)
+		b, err := geojson.Marshal(x.Geom)
 		if err != nil {
 			return err
 		}
@@ -118,38 +118,41 @@ func encodeNode(buf *bytes.Buffer, n cql2.Node) error {
 		if err := writeJSONString(buf, string(x.Op)); err != nil {
 			return err
 		}
-		buf.WriteString(`,"args":[`)
-		for i, a := range x.Args {
-			if i > 0 {
-				buf.WriteByte(',')
-			}
-			if err := encodeNode(buf, a); err != nil {
-				return err
-			}
+		if err := writeArgs(buf, x.Args); err != nil {
+			return err
 		}
-		buf.WriteString(`]}`)
+		buf.WriteByte('}')
 		return nil
 	case *cql2.FunctionCall:
 		buf.WriteString(`{"function":{"name":`)
 		if err := writeJSONString(buf, x.Name); err != nil {
 			return err
 		}
-		buf.WriteString(`,"args":[`)
-		for i, a := range x.Args {
-			if i > 0 {
-				buf.WriteByte(',')
-			}
-			if err := encodeNode(buf, a); err != nil {
-				return err
-			}
+		if err := writeArgs(buf, x.Args); err != nil {
+			return err
 		}
-		buf.WriteString(`]}}`)
+		buf.WriteString(`}}`)
 		return nil
 	}
 	return fmt.Errorf("cql2/json: unsupported node type %T", n)
 }
 
-func writeEndpoint(buf *bytes.Buffer, e cql2.IntervalEndpoint) error {
+// writeArgs emits `,"args":[ ... ]` for the shared op/function argument list.
+func writeArgs(buf *bytes.Buffer, args []cql2.Node) error {
+	buf.WriteString(`,"args":[`)
+	for i, a := range args {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		if err := encodeNode(buf, a); err != nil {
+			return err
+		}
+	}
+	buf.WriteByte(']')
+	return nil
+}
+
+func writeEndpoint(buf *bytes.Buffer, e cql2.Node) error {
 	switch v := e.(type) {
 	case *cql2.Unbounded:
 		return writeJSONString(buf, "..")

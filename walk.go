@@ -22,30 +22,10 @@ func Walk(v Visitor, n Node) {
 	if v = v.Visit(n); v == nil {
 		return
 	}
-	switch x := n.(type) {
-	case *Op:
-		for _, a := range x.Args {
-			Walk(v, a)
-		}
-	case *FunctionCall:
-		for _, a := range x.Args {
-			Walk(v, a)
-		}
-	case *ArrayLit:
-		for _, e := range x.Elements {
-			Walk(v, e)
-		}
-	case *IntervalLit:
-		if n2 := endpointAsNode(x.Start); n2 != nil {
-			Walk(v, n2)
-		}
-		if n2 := endpointAsNode(x.End); n2 != nil {
-			Walk(v, n2)
-		}
-	case *BoolLit, *NumLit, *StringLit, *NullLit,
-		*TimestampLit, *DateLit, *GeomLit, *BBoxLit,
-		*PropertyRef:
-		// leaves
+	// Children owns the per-node-type child enumeration; reuse it so the two
+	// can't drift (guarded by TestChildrenMatchesWalk).
+	for _, c := range Children(n) {
+		Walk(v, c)
 	}
 	v.Visit(nil)
 }
@@ -84,84 +64,27 @@ func Transform(n Node, f func(Node) Node) Node {
 	var rebuilt Node
 	switch x := n.(type) {
 	case *Op:
-		var newArgs []Node
-		changed := false
-		for i, a := range x.Args {
-			na := Transform(a, f)
-			if na != a && !changed {
-				newArgs = make([]Node, len(x.Args))
-				copy(newArgs, x.Args[:i])
-				changed = true
-			}
-			if changed {
-				newArgs[i] = na
-			}
-		}
-		if changed {
-			rebuilt = &Op{Op: x.Op, Args: newArgs}
+		if args, changed := transformSlice(x.Args, f); changed {
+			rebuilt = &Op{Op: x.Op, Args: args}
 		} else {
 			rebuilt = x
 		}
 	case *FunctionCall:
-		var newArgs []Node
-		changed := false
-		for i, a := range x.Args {
-			na := Transform(a, f)
-			if na != a && !changed {
-				newArgs = make([]Node, len(x.Args))
-				copy(newArgs, x.Args[:i])
-				changed = true
-			}
-			if changed {
-				newArgs[i] = na
-			}
-		}
-		if changed {
-			rebuilt = &FunctionCall{Name: x.Name, Args: newArgs}
+		if args, changed := transformSlice(x.Args, f); changed {
+			rebuilt = &FunctionCall{Name: x.Name, Args: args}
 		} else {
 			rebuilt = x
 		}
 	case *ArrayLit:
-		var newEls []Node
-		changed := false
-		for i, e := range x.Elements {
-			ne := Transform(e, f)
-			if ne != e && !changed {
-				newEls = make([]Node, len(x.Elements))
-				copy(newEls, x.Elements[:i])
-				changed = true
-			}
-			if changed {
-				newEls[i] = ne
-			}
-		}
-		if changed {
-			rebuilt = &ArrayLit{Elements: newEls}
+		if els, changed := transformSlice(x.Elements, f); changed {
+			rebuilt = &ArrayLit{Elements: els}
 		} else {
 			rebuilt = x
 		}
 	case *IntervalLit:
-		var ns, ne IntervalEndpoint = x.Start, x.End
-		changed := false
-		if sn := endpointAsNode(x.Start); sn != nil {
-			t := Transform(sn, f)
-			if t != sn {
-				if ep, ok := t.(IntervalEndpoint); ok {
-					ns = ep
-					changed = true
-				}
-			}
-		}
-		if en := endpointAsNode(x.End); en != nil {
-			t := Transform(en, f)
-			if t != en {
-				if ep, ok := t.(IntervalEndpoint); ok {
-					ne = ep
-					changed = true
-				}
-			}
-		}
-		if changed {
+		ns := Transform(x.Start, f)
+		ne := Transform(x.End, f)
+		if ns != x.Start || ne != x.End {
 			rebuilt = &IntervalLit{Start: ns, End: ne}
 		} else {
 			rebuilt = x
@@ -175,28 +98,30 @@ func Transform(n Node, f func(Node) Node) Node {
 	return rebuilt
 }
 
+// transformSlice applies Transform(_, f) to each node in in, allocating a new
+// slice only when some element actually changes. It returns (in, false) when
+// nothing changed, preserving Transform's no-op identity guarantee.
+func transformSlice(in []Node, f func(Node) Node) ([]Node, bool) {
+	var out []Node
+	for i, a := range in {
+		na := Transform(a, f)
+		if na != a && out == nil {
+			out = make([]Node, len(in))
+			copy(out, in[:i])
+		}
+		if out != nil {
+			out[i] = na
+		}
+	}
+	return out, out != nil
+}
+
 // All returns an iterator yielding every node in n in pre-order.
 // Requires Go 1.23+.
 func All(n Node) iter.Seq[Node] {
 	return func(yield func(Node) bool) {
 		allWalk(n, yield)
 	}
-}
-
-// endpointAsNode returns the Node view of an IntervalEndpoint, or nil
-// for nil/*Unbounded endpoints (which carry no AST identity to visit).
-func endpointAsNode(e IntervalEndpoint) Node {
-	switch v := e.(type) {
-	case *TimestampLit:
-		return v
-	case *DateLit:
-		return v
-	case *PropertyRef:
-		return v
-	case *FunctionCall:
-		return v
-	}
-	return nil
 }
 
 // allWalk is the recursive helper for All; returns false if iteration

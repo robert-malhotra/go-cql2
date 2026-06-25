@@ -395,9 +395,8 @@ func TestWithPositions_TextCoverage(t *testing.T) {
 		if node == nil {
 			return true
 		}
-		// NullLit literals don't appear here; PropertyRef/Lit nodes inside
-		// IntervalLit Endpoints are non-Node sentinels and excluded by
-		// Inspect anyway. Every visited node should have a position.
+		// Every visited node, including IntervalLit endpoints (which are
+		// ordinary Nodes), should have a recorded position.
 		if _, ok := pm.Get(node); !ok {
 			missing = append(missing, fmt.Sprintf("%T", node))
 		}

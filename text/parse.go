@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 
 	cql2 "github.com/exergy-dev/go-cql2"
-	"github.com/exergy-dev/go-cql2/wkt"
+	"github.com/exergy-dev/go-topology-suite/wkt"
 )
 
 // Parse parses CQL2 Text input into an AST.
@@ -35,7 +35,7 @@ func Parse(input string, opts ...cql2.Option) (cql2.Node, error) {
 	if p.pos < len(p.src) {
 		return nil, p.syntaxErrorAt(p.curPos(), "unexpected trailing input", p.peekRune())
 	}
-	if err := checkConformance(n, cfg); err != nil {
+	if err := cql2.CheckConformance(n, cfg); err != nil {
 		return nil, err
 	}
 	if err := cql2.Validate(n); err != nil {
@@ -167,14 +167,8 @@ func (p *parser) skipWS() {
 }
 
 func (p *parser) snippet(at int) string {
-	start := at - 8
-	if start < 0 {
-		start = 0
-	}
-	end := at + 16
-	if end > len(p.src) {
-		end = len(p.src)
-	}
+	start := max(0, at-8)
+	end := min(at+16, len(p.src))
 	return p.src[start:end]
 }
 
@@ -471,41 +465,18 @@ func isWKTDimTag(t token) bool {
 	return keywordEqual(t, "Z") || keywordEqual(t, "M") || keywordEqual(t, "ZM")
 }
 
-// operatorFunctionNames maps lowercase function-style operator names to the AST Operator constant.
-var operatorFunctionNames = map[string]cql2.Operator{
-	"casei":   cql2.OpCaseI,
-	"accenti": cql2.OpAccentI,
-
-	"s_intersects": cql2.OpSIntersects,
-	"s_equals":     cql2.OpSEquals,
-	"s_disjoint":   cql2.OpSDisjoint,
-	"s_touches":    cql2.OpSTouches,
-	"s_within":     cql2.OpSWithin,
-	"s_overlaps":   cql2.OpSOverlaps,
-	"s_crosses":    cql2.OpSCrosses,
-	"s_contains":   cql2.OpSContains,
-
-	"t_after":        cql2.OpTAfter,
-	"t_before":       cql2.OpTBefore,
-	"t_contains":     cql2.OpTContains,
-	"t_disjoint":     cql2.OpTDisjoint,
-	"t_during":       cql2.OpTDuring,
-	"t_equals":       cql2.OpTEquals,
-	"t_finishedby":   cql2.OpTFinishedBy,
-	"t_finishes":     cql2.OpTFinishes,
-	"t_intersects":   cql2.OpTIntersects,
-	"t_meets":        cql2.OpTMeets,
-	"t_metby":        cql2.OpTMetBy,
-	"t_overlappedby": cql2.OpTOverlappedBy,
-	"t_overlaps":     cql2.OpTOverlaps,
-	"t_startedby":    cql2.OpTStartedBy,
-	"t_starts":       cql2.OpTStarts,
-
-	"a_contains":    cql2.OpAContains,
-	"a_containedby": cql2.OpAContainedBy,
-	"a_equals":      cql2.OpAEquals,
-	"a_overlaps":    cql2.OpAOverlaps,
-}
+// operatorFunctionNames maps lowercase function-style operator names (the
+// spatial / temporal / array predicates plus CASEI / ACCENTI) to the AST
+// Operator constant. Derived from cql2.FunctionStyleOperators so it stays in
+// sync with the operator table automatically.
+var operatorFunctionNames = func() map[string]cql2.Operator {
+	ops := cql2.FunctionStyleOperators()
+	m := make(map[string]cql2.Operator, len(ops))
+	for _, op := range ops {
+		m[strings.ToLower(string(op))] = op
+	}
+	return m
+}()
 
 var geometryKeywords = map[string]bool{
 	"point": true, "linestring": true, "polygon": true,
@@ -1147,20 +1118,11 @@ func (p *parser) parseDateConstructor(at cql2.Pos) (cql2.Node, error) {
 	if err := p.expectKind(tokRParen, ")"); err != nil {
 		return nil, err
 	}
-	tm, err := time.ParseInLocation("2006-01-02", s, dateLocation(p.cfg))
+	tm, err := time.ParseInLocation("2006-01-02", s, p.cfg.DateLocation())
 	if err != nil {
 		return nil, p.syntaxErrorAt(at, fmt.Sprintf("malformed DATE literal: %v", err), s)
 	}
 	return &cql2.DateLit{Value: tm}, nil
-}
-
-// dateLocation returns the timezone used for bare DATE literals,
-// honouring WithDateTimezone and falling back to UTC.
-func dateLocation(cfg *cql2.Config) *time.Location {
-	if cfg != nil && cfg.DateTimezone != nil {
-		return cfg.DateTimezone
-	}
-	return time.UTC
 }
 
 func (p *parser) parseIntervalConstructor(at cql2.Pos) (cql2.Node, error) {
@@ -1188,7 +1150,7 @@ func (p *parser) parseIntervalConstructor(at cql2.Pos) (cql2.Node, error) {
 // parseIntervalEndpoint into a TimestampLit/DateLit/Unbounded), an unquoted
 // identifier / quoted-identifier (built into a *PropertyRef), or a function
 // call (e.g. INTERVAL(now(), ..)).
-func (p *parser) parseIntervalArg(at cql2.Pos, which string) (cql2.IntervalEndpoint, error) {
+func (p *parser) parseIntervalArg(at cql2.Pos, which string) (cql2.Node, error) {
 	t, err := p.peekToken()
 	if err != nil {
 		return nil, err
@@ -1196,13 +1158,11 @@ func (p *parser) parseIntervalArg(at cql2.Pos, which string) (cql2.IntervalEndpo
 	switch t.kind {
 	case tokString:
 		_, _ = p.consumeToken()
-		ep, err := parseIntervalEndpoint(t.text, dateLocation(p.cfg))
+		ep, err := parseIntervalEndpoint(t.text, p.cfg.DateLocation())
 		if err != nil {
 			return nil, p.syntaxErrorAt(at, fmt.Sprintf("malformed INTERVAL %s: %v", which, err), t.text)
 		}
-		if n, ok := ep.(cql2.Node); ok {
-			p.recordPos(n, t.pos)
-		}
+		p.recordPos(ep, t.pos)
 		return ep, nil
 	case tokIdent:
 		_, _ = p.consumeToken()
@@ -1232,7 +1192,7 @@ func (p *parser) parseIntervalArg(at cql2.Pos, which string) (cql2.IntervalEndpo
 	}
 }
 
-func parseIntervalEndpoint(s string, dateLoc *time.Location) (cql2.IntervalEndpoint, error) {
+func parseIntervalEndpoint(s string, dateLoc *time.Location) (cql2.Node, error) {
 	if s == ".." {
 		return &cql2.Unbounded{}, nil
 	}
@@ -1317,7 +1277,7 @@ func (p *parser) parseGeometryLiteral(t token) (cql2.Node, error) {
 	if keywordEqual(la, "EMPTY") {
 		_, _ = p.consumeToken()
 		endOff := p.pos
-		g, err := wkt.Parse(p.src[startOff:endOff])
+		g, err := wkt.Unmarshal(p.src[startOff:endOff])
 		if err != nil {
 			return nil, p.syntaxErrorAt(t.pos, fmt.Sprintf("invalid geometry literal: %v", err), p.src[startOff:endOff])
 		}
@@ -1364,7 +1324,7 @@ func (p *parser) parseGeometryLiteral(t token) (cql2.Node, error) {
 	// Since we may currently be past openOff, set pos directly and re-derive line/col.
 	p.pos = i
 	p.line, p.col = lineColAt(p.src, i)
-	g, err := wkt.Parse(span)
+	g, err := wkt.Unmarshal(span)
 	if err != nil {
 		return nil, p.syntaxErrorAt(t.pos, fmt.Sprintf("invalid geometry literal: %v", err), span)
 	}
@@ -1374,9 +1334,7 @@ func (p *parser) parseGeometryLiteral(t token) (cql2.Node, error) {
 // lineColAt computes 1-based line/column for the given byte offset in src.
 func lineColAt(src string, off int) (int, int) {
 	line, col := 1, 1
-	if off > len(src) {
-		off = len(src)
-	}
+	off = min(off, len(src))
 	for i := 0; i < off; i++ {
 		if src[i] == '\n' {
 			line++

@@ -9,11 +9,11 @@ import (
 
 	cql2 "github.com/exergy-dev/go-cql2"
 	_ "github.com/exergy-dev/go-cql2/codecs"
-	"github.com/exergy-dev/go-cql2/wkt"
+	"github.com/exergy-dev/go-topology-suite/wkt"
 )
 
 func main() {
-	geom, err := wkt.Parse("POLYGON ((-10 -10, 10 -10, 10 10, -10 10, -10 -10))")
+	geom, err := wkt.Unmarshal("POLYGON ((-10 -10, 10 -10, 10 10, -10 10, -10 -10))")
 	if err != nil {
 		log.Fatal(err)
 	}

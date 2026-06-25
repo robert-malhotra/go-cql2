@@ -1,5 +1,11 @@
 package cql2
 
+import (
+	"strings"
+
+	"github.com/exergy-dev/go-topology-suite/geom"
+)
+
 // Conformance is a bitset of OGC API - Filter conformance classes.
 type Conformance uint32
 
@@ -81,9 +87,8 @@ func RequiresBasicSpatialPlus(op Operator, args []Node) bool {
 	return false
 }
 
-func isPointGeometry(g Geometry) bool {
-	_, ok := g.(*Point)
-	return ok
+func isPointGeometry(g geom.Geometry) bool {
+	return g != nil && g.Type() == geom.PointType
 }
 
 // RequiresPropertyPropertyShape reports whether a binary predicate op with
@@ -119,19 +124,7 @@ func RequiresPropertyPropertyShape(op Operator, args []Node) bool {
 }
 
 func isPropertyPropertyGated(op Operator) bool {
-	switch op {
-	case OpEq, OpNeq, OpLt, OpLte, OpGt, OpGte,
-		OpLike, OpBetween, OpIn,
-		OpSIntersects, OpSEquals, OpSDisjoint, OpSTouches,
-		OpSWithin, OpSOverlaps, OpSCrosses, OpSContains,
-		OpTAfter, OpTBefore, OpTContains, OpTDisjoint,
-		OpTDuring, OpTEquals, OpTFinishedBy, OpTFinishes,
-		OpTIntersects, OpTMeets, OpTMetBy, OpTOverlappedBy,
-		OpTOverlaps, OpTStartedBy, OpTStarts,
-		OpAContains, OpAContainedBy, OpAEquals, OpAOverlaps:
-		return true
-	}
-	return false
+	return opTable[op].propGate
 }
 
 // isLiteralNode reports whether n is a literal-kind AST node — i.e. a
@@ -148,32 +141,7 @@ func isLiteralNode(n Node) bool {
 }
 
 func requiredForOp(op Operator) Conformance {
-	switch op {
-	case OpAnd, OpOr, OpNot,
-		OpEq, OpNeq, OpLt, OpLte, OpGt, OpGte:
-		return ConfBasic
-	case OpLike, OpBetween, OpIn, OpIsNull:
-		return ConfAdvancedComparison
-	case OpCaseI:
-		return ConfCaseInsensitive
-	case OpAccentI:
-		return ConfAccentInsensitive
-	case OpSIntersects:
-		return ConfBasicSpatial
-	case OpSEquals, OpSDisjoint, OpSTouches, OpSWithin,
-		OpSOverlaps, OpSCrosses, OpSContains:
-		return ConfSpatial
-	case OpTAfter, OpTBefore, OpTContains, OpTDisjoint,
-		OpTDuring, OpTEquals, OpTFinishedBy, OpTFinishes,
-		OpTIntersects, OpTMeets, OpTMetBy, OpTOverlappedBy,
-		OpTOverlaps, OpTStartedBy, OpTStarts:
-		return ConfTemporal
-	case OpAContains, OpAContainedBy, OpAEquals, OpAOverlaps:
-		return ConfArray
-	case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpPow, OpIDiv:
-		return ConfArithmetic
-	}
-	return 0
+	return opTable[op].conf
 }
 
 // HumanFeatureName returns a human-readable label for an Operator or
@@ -195,61 +163,10 @@ func HumanFeatureName(feature any) string {
 }
 
 func humanOpName(op Operator) string {
-	switch op {
-	case OpAnd:
-		return "AND"
-	case OpOr:
-		return "OR"
-	case OpNot:
-		return "NOT"
-	case OpEq:
-		return "="
-	case OpNeq:
-		return "<>"
-	case OpLt:
-		return "<"
-	case OpLte:
-		return "<="
-	case OpGt:
-		return ">"
-	case OpGte:
-		return ">="
-	case OpLike:
-		return "LIKE"
-	case OpBetween:
-		return "BETWEEN"
-	case OpIn:
-		return "IN"
-	case OpIsNull:
-		return "IS NULL"
-	case OpCaseI:
-		return "CASEI"
-	case OpAccentI:
-		return "ACCENTI"
-	case OpAdd:
-		return "+"
-	case OpSub:
-		return "-"
-	case OpMul:
-		return "*"
-	case OpDiv:
-		return "/"
-	case OpMod:
-		return "%"
-	case OpPow:
-		return "^"
-	case OpIDiv:
-		return "div"
+	if h := opTable[op].human; h != "" {
+		return h
 	}
-	// Spatial / temporal / array operators: emit upper-case form.
-	s := string(op)
-	out := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'a' && c <= 'z' {
-			c -= 'a' - 'A'
-		}
-		out[i] = c
-	}
-	return string(out)
+	// Spatial / temporal / array operators have no bespoke label: emit the
+	// upper-case form of the operator string (e.g. S_INTERSECTS).
+	return strings.ToUpper(string(op))
 }

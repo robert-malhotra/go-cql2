@@ -7,6 +7,7 @@ import (
 
 	cql2 "github.com/exergy-dev/go-cql2"
 	cqljson "github.com/exergy-dev/go-cql2/json"
+	"github.com/exergy-dev/go-topology-suite/geom"
 )
 
 func TestEncodeBool(t *testing.T) {
@@ -142,7 +143,7 @@ func TestEncodeDeterminism(t *testing.T) {
 }
 
 func TestEncodeGeometryDelegation(t *testing.T) {
-	gl := &cql2.GeomLit{Geom: &cql2.Point{Coord: cql2.Coord{X: 1, Y: 2}}}
+	gl := &cql2.GeomLit{Geom: geom.NewPoint(nil, geom.XY{X: 1, Y: 2})}
 	b, err := cqljson.Encode(gl)
 	if err != nil {
 		t.Fatal(err)

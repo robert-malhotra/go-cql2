@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	cql2 "github.com/exergy-dev/go-cql2"
-	"github.com/exergy-dev/go-cql2/wkt"
+	"github.com/exergy-dev/go-topology-suite/wkt"
 )
 
 // Encode emits an AST as a CQL2 Text string.
@@ -108,7 +108,7 @@ func (e *encoder) writeNode(b *strings.Builder, n cql2.Node, parentPrec int) err
 		b.WriteByte(')')
 		return nil
 	case *cql2.GeomLit:
-		s, err := wkt.Encode(x.Geom)
+		s, err := wkt.Marshal(x.Geom)
 		if err != nil {
 			return err
 		}
@@ -291,25 +291,9 @@ func (e *encoder) writeOpInner(b *strings.Builder, x *cql2.Op) error {
 			return fmt.Errorf("text: LIKE requires 2 arguments")
 		}
 		return e.writeLike(b, x.Args[0], x.Args[1], false)
-	case cql2.OpCaseI, cql2.OpAccentI:
-		name := "CASEI"
-		if x.Op == cql2.OpAccentI {
-			name = "ACCENTI"
-		}
-		b.WriteString(name)
-		b.WriteByte('(')
-		for i, a := range x.Args {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			if err := e.writeNode(b, a, precTop); err != nil {
-				return err
-			}
-		}
-		b.WriteByte(')')
-		return nil
 	}
-	// Default for spatial / temporal / array operators: function-call form.
+	// Default for spatial / temporal / array / casei / accenti operators:
+	// function-call form (e.g. S_INTERSECTS(...), CASEI(...)).
 	return e.writeOpAsFunction(b, x)
 }
 
@@ -440,15 +424,9 @@ func isBareIdent(name string) bool {
 			return false
 		}
 	}
-	switch strings.ToLower(name) {
-	case "and", "or", "not", "like", "between", "in", "is", "null",
-		"true", "false", "date", "timestamp", "interval",
-		"point", "linestring", "polygon", "multipoint", "multilinestring",
-		"multipolygon", "geometrycollection", "bbox",
-		"casei", "accenti", "div":
-		return false
-	}
-	return true
+	// A bare identifier may not collide with a reserved keyword; the parser
+	// would re-interpret it. reservedKeywords (parse.go) is the shared list.
+	return !reservedKeywords[strings.ToLower(name)]
 }
 
 func writePropertyRef(b *strings.Builder, name string) {
@@ -474,7 +452,7 @@ func formatFloat(f float64) string {
 	return strconv.FormatFloat(f, 'g', -1, 64)
 }
 
-func formatEndpoint(ep cql2.IntervalEndpoint) string {
+func formatEndpoint(ep cql2.Node) string {
 	switch v := ep.(type) {
 	case *cql2.Unbounded, nil:
 		return ".."
@@ -490,7 +468,7 @@ func formatEndpoint(ep cql2.IntervalEndpoint) string {
 // date, unbounded) are wrapped in single quotes; property references are
 // emitted unquoted using the standard property-ref formatting; function
 // calls are recursively encoded.
-func (e *encoder) writeIntervalEndpoint(b *strings.Builder, ep cql2.IntervalEndpoint) error {
+func (e *encoder) writeIntervalEndpoint(b *strings.Builder, ep cql2.Node) error {
 	switch v := ep.(type) {
 	case *cql2.PropertyRef:
 		writePropertyRef(b, v.Name)

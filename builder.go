@@ -2,8 +2,12 @@ package cql2
 
 import (
 	"encoding/json"
+	"reflect"
+	"slices"
 	"strconv"
 	"time"
+
+	"github.com/exergy-dev/go-topology-suite/geom"
 )
 
 // Expr is the type returned by every builder helper. It wraps a Node so
@@ -22,26 +26,10 @@ func lift(v any) Node {
 		return &NullLit{}
 	case bool:
 		return &BoolLit{Value: x}
-	case int:
-		return &NumLit{Value: json.Number(strconv.FormatInt(int64(x), 10))}
-	case int8:
-		return &NumLit{Value: json.Number(strconv.FormatInt(int64(x), 10))}
-	case int16:
-		return &NumLit{Value: json.Number(strconv.FormatInt(int64(x), 10))}
-	case int32:
-		return &NumLit{Value: json.Number(strconv.FormatInt(int64(x), 10))}
-	case int64:
-		return &NumLit{Value: json.Number(strconv.FormatInt(x, 10))}
-	case uint:
-		return &NumLit{Value: json.Number(strconv.FormatUint(uint64(x), 10))}
-	case uint8:
-		return &NumLit{Value: json.Number(strconv.FormatUint(uint64(x), 10))}
-	case uint16:
-		return &NumLit{Value: json.Number(strconv.FormatUint(uint64(x), 10))}
-	case uint32:
-		return &NumLit{Value: json.Number(strconv.FormatUint(uint64(x), 10))}
-	case uint64:
-		return &NumLit{Value: json.Number(strconv.FormatUint(x, 10))}
+	case int, int8, int16, int32, int64:
+		return &NumLit{Value: json.Number(strconv.FormatInt(reflect.ValueOf(x).Int(), 10))}
+	case uint, uint8, uint16, uint32, uint64:
+		return &NumLit{Value: json.Number(strconv.FormatUint(reflect.ValueOf(x).Uint(), 10))}
 	case float32:
 		return &NumLit{Value: json.Number(strconv.FormatFloat(float64(x), 'g', -1, 64))}
 	case float64:
@@ -52,25 +40,15 @@ func lift(v any) Node {
 		return &StringLit{Value: x}
 	case time.Time:
 		return &TimestampLit{Value: x}
-	case Geometry:
+	case geom.Geometry:
 		return &GeomLit{Geom: x}
 	case []any:
-		elems := make([]Node, len(x))
-		for i, e := range x {
-			elems[i] = lift(e)
-		}
-		return &ArrayLit{Elements: elems}
+		return &ArrayLit{Elements: mapSlice(x, lift)}
 	case []Expr:
-		elems := make([]Node, len(x))
-		for i, e := range x {
-			elems[i] = e.N
-		}
-		return &ArrayLit{Elements: elems}
+		return &ArrayLit{Elements: mapSlice(x, exprNode)}
 	case []Node:
 		// Take a fresh slice so callers cannot mutate the AST after the fact.
-		elems := make([]Node, len(x))
-		copy(elems, x)
-		return &ArrayLit{Elements: elems}
+		return &ArrayLit{Elements: slices.Clone(x)}
 	case Expr:
 		return x.N
 	case Node:
@@ -133,10 +111,8 @@ func Interval(start, end any) Expr {
 	}}
 }
 
-func intervalEndpoint(v any) IntervalEndpoint {
+func intervalEndpoint(v any) Node {
 	switch x := v.(type) {
-	case *Unbounded:
-		return x
 	case string:
 		if x == ".." {
 			return &Unbounded{}
@@ -144,72 +120,52 @@ func intervalEndpoint(v any) IntervalEndpoint {
 		panic(&UnliftableError{Value: v, Msg: "interval string endpoint must be \"..\""})
 	case time.Time:
 		return &TimestampLit{Value: x}
-	case *TimestampLit:
-		return x
-	case *DateLit:
-		return x
 	case Expr:
-		if ep, ok := x.N.(IntervalEndpoint); ok {
-			return ep
-		}
-		panic(&UnliftableError{Value: v, Msg: "Expr is not a valid interval endpoint"})
+		return intervalEndpoint(x.N)
 	case Node:
-		if ep, ok := x.(IntervalEndpoint); ok {
-			return ep
+		if isValidIntervalEndpoint(x) {
+			return x
 		}
-		panic(&UnliftableError{Value: v, Msg: "Node is not a valid interval endpoint"})
+		panic(&UnliftableError{Value: v, Msg: "not a valid interval endpoint"})
 	default:
 		panic(&UnliftableError{Value: v, Msg: "not a valid interval endpoint"})
 	}
 }
 
 // Geom returns a geometry literal expression.
-func Geom(g Geometry) Expr { return Expr{N: &GeomLit{Geom: g}} }
+func Geom(g geom.Geometry) Expr { return Expr{N: &GeomLit{Geom: g}} }
+
+// exprNode unwraps an Expr to its underlying Node. Used with mapSlice.
+func exprNode(e Expr) Node { return e.N }
 
 // Array returns an array literal expression composed of the lifted elems.
 func Array(elems ...any) Expr {
-	out := make([]Node, len(elems))
-	for i, e := range elems {
-		out[i] = lift(e)
-	}
-	return Expr{N: &ArrayLit{Elements: out}}
+	return Expr{N: &ArrayLit{Elements: mapSlice(elems, lift)}}
 }
 
 // Property returns a property reference expression. Use this in value
 // positions where a bare Go string would otherwise lift to a string literal.
 func Property(name string) Expr { return Expr{N: &PropertyRef{Name: name}} }
 
-// And builds an n-ary conjunction. With 0 args it panics; with 1 arg it
-// returns that arg unchanged; with 2+ it builds an Op{OpAnd, ...}.
-func And(args ...Expr) Expr {
+// naryBool builds an n-ary logical op. With 0 args it panics; with 1 arg it
+// returns that arg unchanged; with 2+ it builds an Op{op, ...}.
+func naryBool(op Operator, name string, args []Expr) Expr {
 	switch len(args) {
 	case 0:
-		panic("cql2: And requires at least one argument")
+		panic("cql2: " + name + " requires at least one argument")
 	case 1:
 		return args[0]
 	}
-	nodes := make([]Node, len(args))
-	for i, a := range args {
-		nodes[i] = a.N
-	}
-	return Expr{N: &Op{Op: OpAnd, Args: nodes}}
+	return Expr{N: &Op{Op: op, Args: mapSlice(args, exprNode)}}
 }
+
+// And builds an n-ary conjunction. With 0 args it panics; with 1 arg it
+// returns that arg unchanged; with 2+ it builds an Op{OpAnd, ...}.
+func And(args ...Expr) Expr { return naryBool(OpAnd, "And", args) }
 
 // Or builds an n-ary disjunction. With 0 args it panics; with 1 arg it
 // returns that arg unchanged; with 2+ it builds an Op{OpOr, ...}.
-func Or(args ...Expr) Expr {
-	switch len(args) {
-	case 0:
-		panic("cql2: Or requires at least one argument")
-	case 1:
-		return args[0]
-	}
-	nodes := make([]Node, len(args))
-	for i, a := range args {
-		nodes[i] = a.N
-	}
-	return Expr{N: &Op{Op: OpOr, Args: nodes}}
-}
+func Or(args ...Expr) Expr { return naryBool(OpOr, "Or", args) }
 
 // Not negates an expression.
 func Not(e Expr) Expr {
@@ -263,13 +219,9 @@ func Between(prop string, lo, hi any) Expr {
 
 // In builds prop IN (values...).
 func In(prop string, values ...any) Expr {
-	elems := make([]Node, len(values))
-	for i, v := range values {
-		elems[i] = lift(v)
-	}
 	return Expr{N: &Op{Op: OpIn, Args: []Node{
 		&PropertyRef{Name: prop},
-		&ArrayLit{Elements: elems},
+		&ArrayLit{Elements: mapSlice(values, lift)},
 	}}}
 }
 
@@ -282,11 +234,7 @@ func IsNull(prop string) Expr {
 func IsNotNull(prop string) Expr { return Not(IsNull(prop)) }
 
 func nary(op Operator, args []any) Expr {
-	nodes := make([]Node, len(args))
-	for i, a := range args {
-		nodes[i] = lift(a)
-	}
-	return Expr{N: &Op{Op: op, Args: nodes}}
+	return Expr{N: &Op{Op: op, Args: mapSlice(args, lift)}}
 }
 
 // Add builds an n-ary addition.
@@ -393,9 +341,5 @@ func AOverlaps(prop string, value any) Expr { return cmp(OpAOverlaps, prop, valu
 
 // Call builds a named function invocation. Each arg is lifted.
 func Call(name string, args ...any) Expr {
-	nodes := make([]Node, len(args))
-	for i, a := range args {
-		nodes[i] = lift(a)
-	}
-	return Expr{N: &FunctionCall{Name: name, Args: nodes}}
+	return Expr{N: &FunctionCall{Name: name, Args: mapSlice(args, lift)}}
 }

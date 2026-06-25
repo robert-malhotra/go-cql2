@@ -1,5 +1,11 @@
 package cql2
 
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
+
 // Validate walks n and returns the first arity / shape violation it finds,
 // or nil if the AST is structurally valid per the CQL2 specification.
 //
@@ -55,15 +61,11 @@ func Validate(n Node) error {
 			}
 		}
 	case *IntervalLit:
-		// Endpoints are non-Node sentinels (Unbounded) or Nodes; only the
-		// latter need recursive validation.
-		if sn := endpointAsNode(x.Start); sn != nil {
-			if err := Validate(sn); err != nil {
-				return err
+		for _, ep := range [2]Node{x.Start, x.End} {
+			if !isValidIntervalEndpoint(ep) {
+				return &ValidationError{Msg: "interval endpoint must be a timestamp, date, property, function, or \"..\"", Node: x}
 			}
-		}
-		if en := endpointAsNode(x.End); en != nil {
-			if err := Validate(en); err != nil {
+			if err := Validate(ep); err != nil {
 				return err
 			}
 		}
@@ -71,63 +73,46 @@ func Validate(n Node) error {
 	return nil
 }
 
-// validateOp checks the arity and shape of a single *Op node.
+// isValidIntervalEndpoint reports whether n is an admissible IntervalLit
+// endpoint per the CQL2 grammar. Used by both Validate and the builder.
+func isValidIntervalEndpoint(n Node) bool {
+	switch n.(type) {
+	case *TimestampLit, *DateLit, *PropertyRef, *FunctionCall, *Unbounded:
+		return true
+	}
+	return false
+}
+
+// validateOp checks the arity and shape of a single *Op node. Arity rules
+// come from opTable; OpIn additionally requires a non-empty array literal.
 func validateOp(x *Op) error {
-	switch x.Op {
-	case OpAnd, OpOr:
+	switch n := opTable[x.Op].arity; {
+	case n == -1:
 		if len(x.Args) < 2 {
 			return arityErr(x, "requires at least 2 arguments")
 		}
-	case OpNot:
-		if len(x.Args) != 1 {
-			return arityErr(x, "requires exactly 1 argument")
+	case n > 0:
+		if len(x.Args) != n {
+			return arityErr(x, fmt.Sprintf("requires exactly %d argument%s", n, plural(n)))
 		}
-	case OpEq, OpNeq, OpLt, OpLte, OpGt, OpGte,
-		OpAdd, OpSub, OpMul, OpDiv, OpMod, OpPow, OpIDiv,
-		OpLike,
-		OpSIntersects, OpSEquals, OpSDisjoint, OpSTouches,
-		OpSWithin, OpSOverlaps, OpSCrosses, OpSContains,
-		OpTAfter, OpTBefore, OpTContains, OpTDisjoint,
-		OpTDuring, OpTEquals, OpTFinishedBy, OpTFinishes,
-		OpTIntersects, OpTMeets, OpTMetBy, OpTOverlappedBy,
-		OpTOverlaps, OpTStartedBy, OpTStarts,
-		OpAContains, OpAContainedBy, OpAEquals, OpAOverlaps:
-		if len(x.Args) != 2 {
-			return arityErr(x, "requires exactly 2 arguments")
-		}
-	case OpBetween:
-		if len(x.Args) != 3 {
-			return arityErr(x, "requires exactly 3 arguments (value, lo, hi)")
-		}
-	case OpIn:
-		if len(x.Args) != 2 {
-			return arityErr(x, "requires exactly 2 arguments (value, list)")
-		}
+	}
+	if x.Op == OpIn {
 		arr, ok := x.Args[1].(*ArrayLit)
 		if !ok {
-			return &ValidationError{
-				Op:   x.Op,
-				Msg:  "second argument must be an array literal",
-				Node: x,
-			}
+			return &ValidationError{Op: x.Op, Msg: "second argument must be an array literal", Node: x}
 		}
 		if len(arr.Elements) == 0 {
-			return &ValidationError{
-				Op:   x.Op,
-				Msg:  "list must contain at least one element",
-				Node: x,
-			}
-		}
-	case OpIsNull:
-		if len(x.Args) != 1 {
-			return arityErr(x, "requires exactly 1 argument")
-		}
-	case OpCaseI, OpAccentI:
-		if len(x.Args) != 1 {
-			return arityErr(x, "requires exactly 1 argument")
+			return &ValidationError{Op: x.Op, Msg: "list must contain at least one element", Node: x}
 		}
 	}
 	return nil
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func arityErr(x *Op, msg string) error {
@@ -162,38 +147,16 @@ var reservedFunctionNames = map[string]struct{}{
 }
 
 func isReservedFunctionName(s string) bool {
-	lower := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		lower[i] = c
-	}
-	_, ok := reservedFunctionNames[string(lower)]
+	_, ok := reservedFunctionNames[strings.ToLower(s)]
 	return ok
 }
 
-// isValidFunctionName reports whether s matches the CQL2 identifier
-// grammar [A-Za-z_][A-Za-z0-9_]*. Function names are emitted unquoted
-// in the text encoding, so any deviation from this grammar produces
+// functionNameRe is the CQL2 identifier grammar for function names. Function
+// names are emitted unquoted in the text encoding, so any deviation produces
 // output the parser would later reject.
+var functionNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// isValidFunctionName reports whether s matches [A-Za-z_][A-Za-z0-9_]*.
 func isValidFunctionName(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		if i == 0 {
-			if !((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_') {
-				return false
-			}
-			continue
-		}
-		if !((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
-			(ch >= '0' && ch <= '9') || ch == '_') {
-			return false
-		}
-	}
-	return true
+	return functionNameRe.MatchString(s)
 }

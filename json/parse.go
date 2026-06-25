@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	cql2 "github.com/exergy-dev/go-cql2"
-	"github.com/exergy-dev/go-cql2/geojson"
+	"github.com/exergy-dev/go-topology-suite/geojson"
 )
 
 // Parse decodes a CQL2-JSON document into a cql2.Node.
@@ -25,7 +27,7 @@ func Parse(data []byte, opts ...cql2.Option) (cql2.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := checkConformance(n, cfg); err != nil {
+	if err := cql2.CheckConformance(n, cfg); err != nil {
 		return nil, err
 	}
 	if err := cql2.Validate(n); err != nil {
@@ -69,20 +71,7 @@ func (p *jparser) recordPos(n cql2.Node, path string) {
 // value. CQL2 op names are case-insensitive on input, but the AST and
 // encoders use the canonical form (e.g. `isNull`, not `isnull`).
 var canonicalOps = func() map[string]cql2.Operator {
-	all := []cql2.Operator{
-		cql2.OpAnd, cql2.OpOr, cql2.OpNot,
-		cql2.OpEq, cql2.OpNeq, cql2.OpLt, cql2.OpLte, cql2.OpGt, cql2.OpGte,
-		cql2.OpLike, cql2.OpBetween, cql2.OpIn, cql2.OpIsNull,
-		cql2.OpAdd, cql2.OpSub, cql2.OpMul, cql2.OpDiv, cql2.OpMod, cql2.OpPow, cql2.OpIDiv,
-		cql2.OpSIntersects, cql2.OpSEquals, cql2.OpSDisjoint, cql2.OpSTouches,
-		cql2.OpSWithin, cql2.OpSOverlaps, cql2.OpSCrosses, cql2.OpSContains,
-		cql2.OpTAfter, cql2.OpTBefore, cql2.OpTContains, cql2.OpTDisjoint,
-		cql2.OpTDuring, cql2.OpTEquals, cql2.OpTFinishedBy, cql2.OpTFinishes,
-		cql2.OpTIntersects, cql2.OpTMeets, cql2.OpTMetBy, cql2.OpTOverlappedBy,
-		cql2.OpTOverlaps, cql2.OpTStartedBy, cql2.OpTStarts,
-		cql2.OpAContains, cql2.OpAContainedBy, cql2.OpAEquals, cql2.OpAOverlaps,
-		cql2.OpCaseI, cql2.OpAccentI,
-	}
+	all := cql2.Operators()
 	m := make(map[string]cql2.Operator, len(all))
 	for _, o := range all {
 		m[strings.ToLower(string(o))] = o
@@ -127,36 +116,13 @@ func serrGE(path, msg, got string, expected []string) error {
 	}
 }
 
-// trimWS returns raw with leading/trailing JSON whitespace removed.
-func trimWS(raw []byte) []byte {
-	i := 0
-	for i < len(raw) {
-		c := raw[i]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-			i++
-			continue
-		}
-		break
-	}
-	j := len(raw)
-	for j > i {
-		c := raw[j-1]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-			j--
-			continue
-		}
-		break
-	}
-	return raw[i:j]
-}
-
 // parseNode dispatches by first non-whitespace byte and recurses.
 func (p *jparser) parseNode(raw json.RawMessage, path string) (cql2.Node, error) {
 	if err := p.enterDepth(path); err != nil {
 		return nil, err
 	}
 	defer p.leaveDepth()
-	t := trimWS(raw)
+	t := bytes.TrimSpace(raw)
 	if len(t) == 0 {
 		return nil, serr(path, "empty value")
 	}
@@ -215,18 +181,28 @@ func parseNumber(raw []byte, path string) (cql2.Node, error) {
 	return &cql2.NumLit{Value: json.Number(s)}, nil
 }
 
+// parseNodeList parses each raw element as a node, recording its JSON-Pointer
+// path as basePath/<index>.
+func (p *jparser) parseNodeList(rawList []json.RawMessage, basePath string) ([]cql2.Node, error) {
+	out := make([]cql2.Node, len(rawList))
+	for i, r := range rawList {
+		child, err := p.parseNode(r, joinPath(basePath, strconv.Itoa(i)))
+		if err != nil {
+			return nil, err
+		}
+		out[i] = child
+	}
+	return out, nil
+}
+
 func (p *jparser) parseArray(raw []byte, path string) (cql2.Node, error) {
 	var elems []json.RawMessage
 	if err := json.Unmarshal(raw, &elems); err != nil {
 		return nil, serr(path, fmt.Sprintf("invalid array: %v", err))
 	}
-	out := make([]cql2.Node, len(elems))
-	for i, e := range elems {
-		child, err := p.parseNode(e, joinPath(path, strconv.Itoa(i)))
-		if err != nil {
-			return nil, err
-		}
-		out[i] = child
+	out, err := p.parseNodeList(elems, path)
+	if err != nil {
+		return nil, err
 	}
 	return &cql2.ArrayLit{Elements: out}, nil
 }
@@ -328,13 +304,9 @@ func (p *jparser) parseOp(obj map[string]json.RawMessage, path string) (cql2.Nod
 		return nil, serr(joinPath(path, "args"),
 			fmt.Sprintf("\"args\" must be an array: %v", err))
 	}
-	args := make([]cql2.Node, len(rawList))
-	for i, r := range rawList {
-		child, err := p.parseNode(r, joinPath(path, "args", strconv.Itoa(i)))
-		if err != nil {
-			return nil, err
-		}
-		args[i] = child
+	args, err := p.parseNodeList(rawList, joinPath(path, "args"))
+	if err != nil {
+		return nil, err
 	}
 	if !isKnown {
 		// Unknown op → fallback to FunctionCall. Function names are
@@ -370,13 +342,9 @@ func (p *jparser) parseFunction(obj map[string]json.RawMessage, path string) (cq
 		return nil, serr(joinPath(path, "function", "args"),
 			fmt.Sprintf("\"args\" must be an array: %v", err))
 	}
-	args := make([]cql2.Node, len(rawList))
-	for i, r := range rawList {
-		child, err := p.parseNode(r, joinPath(path, "function", "args", strconv.Itoa(i)))
-		if err != nil {
-			return nil, err
-		}
-		args[i] = child
+	args, err := p.parseNodeList(rawList, joinPath(path, "function", "args"))
+	if err != nil {
+		return nil, err
 	}
 	return &cql2.FunctionCall{Name: name, Args: args}, nil
 }
@@ -410,21 +378,12 @@ func (p *jparser) parseDate(obj map[string]json.RawMessage, path string) (cql2.N
 		return nil, serr(joinPath(path, "date"),
 			fmt.Sprintf("\"date\" must be a string: %v", err))
 	}
-	tt, err := time.ParseInLocation("2006-01-02", s, dateLocation(p.cfg))
+	tt, err := time.ParseInLocation("2006-01-02", s, p.cfg.DateLocation())
 	if err != nil {
 		return nil, serr(joinPath(path, "date"),
 			fmt.Sprintf("invalid YYYY-MM-DD date: %v", err))
 	}
 	return &cql2.DateLit{Value: tt}, nil
-}
-
-// dateLocation returns the timezone used for bare DATE literals,
-// honouring WithDateTimezone and falling back to UTC.
-func dateLocation(cfg *cql2.Config) *time.Location {
-	if cfg != nil && cfg.DateTimezone != nil {
-		return cfg.DateTimezone
-	}
-	return time.UTC
 }
 
 func (p *jparser) parseInterval(obj map[string]json.RawMessage, path string) (cql2.Node, error) {
@@ -439,8 +398,8 @@ func (p *jparser) parseInterval(obj map[string]json.RawMessage, path string) (cq
 		return nil, serr(joinPath(path, "interval"),
 			fmt.Sprintf("interval must have exactly 2 endpoints, got %d", len(rawEndpoints)))
 	}
-	parseEnd := func(raw json.RawMessage, idx int) (cql2.IntervalEndpoint, error) {
-		t := trimWS(raw)
+	parseEnd := func(raw json.RawMessage, idx int) (cql2.Node, error) {
+		t := bytes.TrimSpace(raw)
 		if len(t) == 0 {
 			return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
 				"empty interval endpoint")
@@ -452,16 +411,18 @@ func (p *jparser) parseInterval(obj map[string]json.RawMessage, path string) (cq
 				return nil, serr(joinPath(path, "interval", strconv.Itoa(idx)),
 					fmt.Sprintf("invalid interval endpoint string: %v", err))
 			}
-			if s == ".." {
-				return &cql2.Unbounded{}, nil
-			}
 			endpointPath := joinPath(path, "interval", strconv.Itoa(idx))
+			if s == ".." {
+				ub := &cql2.Unbounded{}
+				p.recordPos(ub, endpointPath)
+				return ub, nil
+			}
 			if tt, err := time.Parse(time.RFC3339Nano, s); err == nil {
 				ts := &cql2.TimestampLit{Value: tt}
 				p.recordPos(ts, endpointPath)
 				return ts, nil
 			}
-			if tt, err := time.ParseInLocation("2006-01-02", s, dateLocation(p.cfg)); err == nil {
+			if tt, err := time.ParseInLocation("2006-01-02", s, p.cfg.DateLocation()); err == nil {
 				d := &cql2.DateLit{Value: tt}
 				p.recordPos(d, endpointPath)
 				return d, nil
@@ -541,16 +502,15 @@ func parseBBox(obj map[string]json.RawMessage, path string) (cql2.Node, error) {
 }
 
 func parseGeometry(raw []byte, path string) (cql2.Node, error) {
-	g, err := geojson.Parse(raw)
+	g, err := geojson.Unmarshal(raw)
 	if err != nil {
-		// Re-anchor the error's JSONPath under our current path. The geojson
-		// path is already an RFC 6901 pointer ("" for root, "/coordinates"
-		// for nested). Concatenation is the correct operation.
-		if ge, ok := err.(*cql2.GeometryError); ok {
-			ge.At.JSONPath = path + ge.At.JSONPath
-			return nil, ge
+		// gts geojson returns flat errors without position info; wrap as a
+		// cql2.GeometryError anchored at the caller's JSON-pointer path.
+		return nil, &cql2.GeometryError{
+			Encoding: cql2.EncodingJSON,
+			At:       cql2.Pos{JSONPath: path},
+			Msg:      err.Error(),
 		}
-		return nil, err
 	}
 	return &cql2.GeomLit{Geom: g}, nil
 }
@@ -599,20 +559,8 @@ func has(obj map[string]json.RawMessage, k string) bool {
 	return ok
 }
 
+// keysOf renders an object's keys as {a,b,c} for error messages. Keys are
+// sorted so the message is deterministic regardless of map iteration order.
 func keysOf(obj map[string]json.RawMessage) string {
-	if len(obj) == 0 {
-		return "{}"
-	}
-	out := make([]byte, 0, 32)
-	out = append(out, '{')
-	first := true
-	for k := range obj {
-		if !first {
-			out = append(out, ',')
-		}
-		first = false
-		out = append(out, k...)
-	}
-	out = append(out, '}')
-	return string(out)
+	return "{" + strings.Join(slices.Sorted(maps.Keys(obj)), ",") + "}"
 }
